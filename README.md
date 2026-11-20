@@ -6,6 +6,11 @@ tray icon that shows a live value; a click opens the details.
 
 It is a single C# file with no dependencies beyond what ships with Windows.
 
+> **Created solely by AI.** All code and documentation in this repository were
+> written by an AI (Claude, via Claude Code) from short prompts; no line was
+> written by hand. It has been tried on one machine only, so treat it
+> accordingly.
+
 ## Modules
 
 | Module  | Tray icon shows              | Click opens                                                        |
