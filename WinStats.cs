@@ -1328,14 +1328,31 @@ namespace WinStats
         }
 
         // "WinStats.exe --preview out.png": renders all widgets and popups into an image (for checking the drawing code).
-        public static void Preview(string path)
+        // With a module name ("--preview out.png CPU") it samples for a while and renders only that module's popup.
+        public static void Preview(string path, string only)
         {
             List<Module> mods = CreateModules();
-            for (int i = 0; i < 4; i++)
+            if (only != null) mods = mods.Where(m => string.Equals(m.Name, only, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (mods.Count == 0) return;
+            for (int i = 0; i < (only == null ? 4 : 45); i++)
             {
                 foreach (Module m in mods) { try { m.Update(i == 0 ? 0 : 1); } catch { } }
                 Procs.Sample(i == 0 ? 0 : 1);
                 Thread.Sleep(1000);
+            }
+            if (only != null)
+            {
+                using (Popup one = new Popup())
+                {
+                    int h = one.SetModule(mods[0]);
+                    using (Bitmap bmp = new Bitmap(one.W, h))
+                    using (Graphics g = Graphics.FromImage(bmp))
+                    {
+                        one.PaintTo(g, one.W, h);
+                        bmp.Save(path, ImageFormat.Png);
+                    }
+                }
+                return;
             }
             int size = IconSize, zoom = 4, cell = size * zoom + 12;
             using (Popup popup = new Popup())
@@ -1379,7 +1396,7 @@ namespace WinStats
             if (!pm) Native.SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            if (args.Length == 2 && args[0] == "--preview") { App.Preview(args[1]); return; }
+            if (args.Length >= 2 && args[0] == "--preview") { App.Preview(args[1], args.Length > 2 ? args[2] : null); return; }
             if (args.Length == 2 && args[0] == "--monitors")   // read-only: lists monitors and their inputs into a text file
             {
                 DisplayModule d = new DisplayModule();

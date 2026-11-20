@@ -9,6 +9,11 @@ tray icon that shows a live value; a click opens the details.
 *The tray icons in the "Bar with symbol" style (enlarged 2×): display input,
 battery, network, disk, memory, GPU and CPU.*
 
+![CPU details popup](popup.png)
+
+*The details popup of the CPU module: load history, per-core bars, key figures
+and the top processes.*
+
 It is a single C# file with no dependencies beyond what ships with Windows.
 
 > **Created solely by AI.** All code and documentation in this repository were
@@ -93,7 +98,8 @@ language features.
 - Settings are stored under `HKCU\Software\WinStats`; "Start with Windows" adds
   an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Two diagnostic switches render without starting the tray app:
-  `WinStats.exe --preview out.png` draws all widgets and popups into an image,
+  `WinStats.exe --preview out.png` draws all widgets and popups into an image
+  (add a module name such as `CPU` to get just that popup after 45 s of sampling),
   `WinStats.exe --monitors out.txt` lists the detected monitors and inputs.
 
 ## Limitations
