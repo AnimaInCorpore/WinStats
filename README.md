@@ -4,6 +4,11 @@ A tiny system monitor for the Windows 11 taskbar, inspired by
 [Stats for macOS](https://github.com/exelban/stats). Each module gets its own
 tray icon that shows a live value; a click opens the details.
 
+![WinStats icons in the Windows 11 taskbar](screenshot.png)
+
+*The tray icons in the "Bar with symbol" style (enlarged 2×): display input,
+battery, network, disk, memory, GPU and CPU.*
+
 It is a single C# file with no dependencies beyond what ships with Windows.
 
 > **Created solely by AI.** All code and documentation in this repository were
