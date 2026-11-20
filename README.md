@@ -58,6 +58,9 @@ flyout (the `^` arrow): drag them onto the taskbar, or enable them under
 | Line chart        | Recent history as a small chart              |
 | Bar with symbol   | Module symbol next to a level bar            |
 | Symbol with value | Module symbol above the value                |
+| Segmented meters  | Module symbol above a five-step level meter  |
+| Load rings        | Module symbol inside a circular level meter   |
+| Large readings    | Large value above a color-coded module label  |
 
 The network icon always shows its two speeds, except in the line chart style.
 

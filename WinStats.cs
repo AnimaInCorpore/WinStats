@@ -221,6 +221,12 @@ namespace WinStats
         }
     }
 
+    // These values are saved in the registry. Append new styles to preserve existing settings.
+    enum WidgetStyle
+    {
+        Mini, BarWithLetter, LineChart, BarWithSymbol, SymbolWithValue, SegmentedMeters, LoadRings, LargeReadings
+    }
+
     abstract class Module
     {
         public string Name, Label;
@@ -279,36 +285,76 @@ namespace WinStats
             using (GraphicsPath path = Draw.RoundedBox(o, p.Width)) g.DrawPath(p, path);
         }
 
-        // style: 0 = mini (label + value), 1 = bar, 2 = line chart, 3 = bar with symbol, 4 = symbol with value
-        public virtual void DrawIcon(Graphics g, int s, Color fg, int style)
+        protected void PaintSymbol(Graphics g, RectangleF bounds, int size, Color fg)
         {
-            if (style == 2)
+            using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(size)))
+            using (SolidBrush b = new SolidBrush(fg)) DrawSymbol(g, bounds, p, b);
+        }
+
+        void DrawSegmentedMeter(Graphics g, int s, Color fg)
+        {
+            int symbolSize = (int)Math.Round(s * 0.69f);
+            PaintSymbol(g, new RectangleF((s - symbolSize) / 2, 0, symbolSize, symbolSize), s, fg);
+
+            const int count = 5;
+            int gap = Math.Max(1, s / 16);
+            int width = (s - (count - 1) * gap - 2) / count;
+            int x = (s - count * width - (count - 1) * gap) / 2;
+            int height = Math.Max(2, s / 8);
+            int filled = (int)Math.Round(count * U.Clamp01(Value), MidpointRounding.AwayFromZero);
+            using (SolidBrush active = new SolidBrush(Draw.TrayAccent(Color, fg)))
+            using (SolidBrush rest = new SolidBrush(Color.FromArgb(64, fg)))
+                for (int i = 0; i < count; i++)
+                    g.FillRectangle(i < filled ? active : rest, x + i * (width + gap), s - height - 1, width, height);
+        }
+
+        void DrawLoadRing(Graphics g, int s, Color fg)
+        {
+            int stroke = Draw.TrayStrokeWidth(s);
+            float inset = 1 + stroke / 2f;
+            RectangleF ring = new RectangleF(inset, inset, s - 2 * inset, s - 2 * inset);
+            float level = U.Clamp01(Value);
+            using (Pen track = new Pen(Color.FromArgb(62, fg), stroke)) g.DrawEllipse(track, ring);
+            if (level > 0)
+            {
+                using (Pen active = new Pen(Draw.TrayAccent(Color, fg), stroke))
+                {
+                    active.StartCap = active.EndCap = LineCap.Round;
+                    if (level == 1) g.DrawEllipse(active, ring);
+                    else g.DrawArc(active, ring, -90, 360 * level);
+                }
+            }
+
+            int symbolSize = (int)Math.Round(s * 0.52f);
+            int start = (s - symbolSize) / 2;
+            PaintSymbol(g, new RectangleF(start, start, symbolSize, symbolSize), s, fg);
+        }
+
+        public virtual void DrawIcon(Graphics g, int s, Color fg, WidgetStyle style)
+        {
+            if (style == WidgetStyle.LineChart)
             {
                 float baseline = s - 1.5f;
                 Draw.Chart(g, new RectangleF(1, 2, s - 2, baseline - 2), History, HistoryMax,
                     Draw.TrayAccent(Color, fg), Math.Max(8, s / 2));
                 using (Pen p = new Pen(Color.FromArgb(85, fg))) g.DrawLine(p, 1, baseline, s - 1, baseline);
             }
-            else if (style == 4)
+            else if (style == WidgetStyle.SymbolWithValue)
             {
                 // Symbol on top, value below.
                 float a = (float)Math.Round(s * 0.48f);
-                using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(s)))
-                using (SolidBrush b = new SolidBrush(fg))
-                    DrawSymbol(g, new RectangleF((float)Math.Floor((s - a) / 2), 0, a, a), p, b);
+                PaintSymbol(g, new RectangleF((float)Math.Floor((s - a) / 2), 0, a, a), s, fg);
                 float top = a + Math.Max(1, s / 16);
                 Draw.Fit(g, IconText, new RectangleF(0, top, s, s - top), fg, true);
             }
-            else if (style == 1 || style == 3)
+            else if (style == WidgetStyle.BarWithLetter || style == WidgetStyle.BarWithSymbol)
             {
                 float w = (float)Math.Round(s * 0.24f);
                 float x = s - w - Math.Max(1, s / 16);
-                if (style == 3)
+                if (style == WidgetStyle.BarWithSymbol)
                 {
                     float a = x - Math.Max(1, s / 16);
-                    using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(s)))
-                    using (SolidBrush b = new SolidBrush(fg))
-                        DrawSymbol(g, new RectangleF(0, (float)Math.Floor((s - a) / 2), a, a), p, b);
+                    PaintSymbol(g, new RectangleF(0, (float)Math.Floor((s - a) / 2), a, a), s, fg);
                 }
                 else Draw.Fit(g, Label.Substring(0, 1), new RectangleF(0, 0, x - 1, s), fg, true);
 
@@ -327,6 +373,13 @@ namespace WinStats
                         g.Restore(state);
                     }
                 }
+            }
+            else if (style == WidgetStyle.SegmentedMeters) DrawSegmentedMeter(g, s, fg);
+            else if (style == WidgetStyle.LoadRings) DrawLoadRing(g, s, fg);
+            else if (style == WidgetStyle.LargeReadings)
+            {
+                Draw.Fit(g, IconText, new RectangleF(0, 0, s, s * 0.68f), fg, true);
+                Draw.Fit(g, Label, new RectangleF(1, s * 0.69f, s - 2, s * 0.3f), Draw.TrayAccent(Color, fg), true);
             }
             else
             {
@@ -678,9 +731,9 @@ namespace WinStats
             Push((float)(down + up));
         }
 
-        public override void DrawIcon(Graphics g, int s, Color fg, int style)
+        public override void DrawIcon(Graphics g, int s, Color fg, WidgetStyle style)
         {
-            if (style == 2) { base.DrawIcon(g, s, fg, style); return; }
+            if (style == WidgetStyle.LineChart) { base.DrawIcon(g, s, fg, style); return; }
             float row = s / 2f;
             DrawSpeed(g, 0, s, U.Short(up), Draw.TrayAccent(Up, fg), true);
             DrawSpeed(g, row, s, U.Short(down), Draw.TrayAccent(Down, fg), false);
@@ -979,13 +1032,11 @@ namespace WinStats
             Line(g, p, r, 0.25f, 0.9f, 0.75f, 0.9f);
         }
 
-        public override void DrawIcon(Graphics g, int s, Color fg, int style)
+        public override void DrawIcon(Graphics g, int s, Color fg, WidgetStyle style)
         {
-            if (style == 0 || style == 4) { base.DrawIcon(g, s, fg, style); return; }
+            if (style == WidgetStyle.Mini || style == WidgetStyle.SymbolWithValue) { base.DrawIcon(g, s, fg, style); return; }
             // No level to chart: a monitor with the active input written on its screen.
-            using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(s)))
-            using (SolidBrush b = new SolidBrush(fg))
-                DrawSymbol(g, new RectangleF(0, 0, s, s), p, b);
+            PaintSymbol(g, new RectangleF(0, 0, s, s), s, fg);
             Draw.Fit(g, IconText, new RectangleF(s * 0.12f, s * 0.15f, s * 0.76f, s * 0.52f), fg, true);
         }
 
@@ -1149,11 +1200,15 @@ namespace WinStats
         const string Key = @"Software\WinStats";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const int SmallIconWidth = 49;   // SM_CXSMICON
-        static readonly string[] Styles = { "Mini (label + value)", "Bar with letter", "Line chart", "Bar with symbol", "Symbol with value" };
+        static readonly string[] Styles = {
+            "Mini (label + value)", "Bar with letter", "Line chart", "Bar with symbol", "Symbol with value",
+            "Segmented meters", "Load rings", "Large readings"
+        };
 
         List<Module> mods;
         HashSet<string> disabled = new HashSet<string>();
-        int style, interval = 1;
+        WidgetStyle style;
+        int interval = 1;
         Control ui = new Control();
         Popup popup = new Popup();
         ContextMenuStrip menu = new ContextMenuStrip();
@@ -1208,7 +1263,7 @@ namespace WinStats
             }
         }
 
-        static Bitmap Render(Module m, int size, Color fg, int style)
+        static Bitmap Render(Module m, int size, Color fg, WidgetStyle style)
         {
             Bitmap bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
             using (Graphics g = Graphics.FromImage(bmp))
@@ -1227,7 +1282,7 @@ namespace WinStats
             using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key))
             {
                 foreach (string s in Convert.ToString(k.GetValue("Disabled", "")).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)) disabled.Add(s);
-                style = Math.Max(0, Math.Min(Styles.Length - 1, Convert.ToInt32(k.GetValue("Style", 0))));
+                style = (WidgetStyle)Math.Max(0, Math.Min(Styles.Length - 1, Convert.ToInt32(k.GetValue("Style", 0))));
                 interval = Math.Max(1, Math.Min(10, Convert.ToInt32(k.GetValue("Interval", 1))));
             }
             mods = CreateModules();
@@ -1319,7 +1374,7 @@ namespace WinStats
             using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key))
             {
                 k.SetValue("Disabled", string.Join(",", disabled.ToArray()));
-                k.SetValue("Style", style);
+                k.SetValue("Style", (int)style);
                 k.SetValue("Interval", interval);
             }
         }
@@ -1362,8 +1417,8 @@ namespace WinStats
             ToolStripMenuItem widget = new ToolStripMenuItem("Widget");
             for (int i = 0; i < Styles.Length; i++)
             {
-                int n = i;
-                widget.DropDownItems.Add(new ToolStripMenuItem(Styles[i], null, delegate { style = n; Save(); RefreshUi(); }));
+                WidgetStyle option = (WidgetStyle)i;
+                widget.DropDownItems.Add(new ToolStripMenuItem(Styles[i], null, delegate { style = option; Save(); RefreshUi(); }));
             }
 
             int[] secs = { 1, 2, 5 };
@@ -1388,7 +1443,7 @@ namespace WinStats
             menu.Opening += delegate
             {
                 foreach (ToolStripMenuItem it in modules.DropDownItems) it.Checked = !disabled.Contains(((Module)it.Tag).Name);
-                for (int i = 0; i < widget.DropDownItems.Count; i++) ((ToolStripMenuItem)widget.DropDownItems[i]).Checked = i == style;
+                for (int i = 0; i < widget.DropDownItems.Count; i++) ((ToolStripMenuItem)widget.DropDownItems[i]).Checked = i == (int)style;
                 foreach (ToolStripMenuItem it in rate.DropDownItems) it.Checked = (int)it.Tag == interval;
                 auto.Checked = Autostart;
             };
@@ -1446,7 +1501,7 @@ namespace WinStats
                     g.PixelOffsetMode = PixelOffsetMode.Half;
                     for (int st = 0; st < Styles.Length; st++)
                         for (int i = 0; i < mods.Count; i++)
-                            using (Bitmap ic = Render(mods[i], size, Color.White, st))
+                            using (Bitmap ic = Render(mods[i], size, Color.White, (WidgetStyle)st))
                                 g.DrawImage(ic, new Rectangle(12 + i * cell, 12 + st * cell, size * zoom, size * zoom));
                     g.PixelOffsetMode = PixelOffsetMode.Default;
                     for (int i = 0; i < mods.Count; i++)
