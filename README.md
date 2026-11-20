@@ -1,18 +1,23 @@
-# WinStats
+<h1 align="center">WinStats</h1>
 
-A tiny system monitor for the Windows 11 taskbar, inspired by
-[Stats for macOS](https://github.com/exelban/stats). Each module gets its own
-tray icon that shows a live value; a click opens the details.
+<p align="center">
+  A tiny system monitor for the Windows 11 taskbar, inspired by
+  <a href="https://github.com/exelban/stats">Stats for macOS</a>.<br>
+  One tray icon per module with a live value; a click opens the details.
+</p>
 
-![WinStats icons in the Windows 11 taskbar](screenshot.png)
+<p align="center">
+  <img src="docs/taskbar.png" alt="WinStats icons in the Windows 11 taskbar" width="684">
+</p>
 
-*The tray icons in the "Bar with symbol" style (enlarged 2×): display input,
-battery, network, disk, memory, GPU and CPU.*
+<p align="center">
+  <a href="https://github.com/AnimaInCorpore/WinStats/releases/latest"><b>Download WinStats.exe</b></a>
+  &nbsp;·&nbsp; single file, about 50 KB &nbsp;·&nbsp; nothing to install
+</p>
 
-![CPU details popup](popup.png)
-
-*The details popup of the CPU module: load history, per-core bars, key figures
-and the top processes.*
+<p align="center">
+  <img src="docs/popups.png" alt="Details popups of the CPU, GPU, memory and battery modules" width="900">
+</p>
 
 It is a single C# file with no dependencies beyond what ships with Windows.
 
@@ -23,15 +28,15 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 
 ## Modules
 
-| Module  | Tray icon shows              | Click opens                                                        |
-|---------|------------------------------|--------------------------------------------------------------------|
-| CPU     | Total load in %              | History, per-core bars, thermal zone, uptime, top processes        |
-| GPU     | Load of the busiest adapter  | History, load and dedicated memory per adapter, installed GPUs     |
-| Memory  | Used RAM in %                | History, used / available / committed, top processes               |
-| Disk    | Used space on the system drive | Read/write speed and activity history, free space of all drives  |
-| Network | Upload (red) and download (blue) speed | History, interface, local IP, totals since start         |
-| Battery | Charge in %                  | History, power source, state, time remaining                       |
-| Display | Active monitor input (e.g. `DP1`) | A menu to switch the monitor's input source                   |
+|     | Module  | Tray icon shows | Click opens |
+|:---:|---------|-----------------|-------------|
+| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load in % | History, per-core bars, thermal zone, uptime, top processes |
+| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load of the busiest adapter | History, load and dedicated memory per adapter, installed GPUs |
+| <img src="docs/modules/memory.png" width="40" alt=""> | **Memory** | Used RAM in % | History, used / available / committed, top processes |
+| <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space on the system drive | Read/write speed and activity history, free space of all drives |
+| <img src="docs/modules/network.png" width="40" alt=""> | **Network** | Upload (red) and download (blue) speed | History, interface, local IP, totals since start |
+| <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining |
+| <img src="docs/modules/display.png" width="40" alt=""> | **Display** | Active monitor input (e.g. `DP1`) | A menu to switch the monitor's input source |
 
 The battery module only appears on machines with a battery.
 
@@ -51,17 +56,22 @@ flyout (the `^` arrow): drag them onto the taskbar, or enable them under
 
 ### Widget styles
 
-| Style             | Icon                                         |
-|-------------------|----------------------------------------------|
-| Mini              | Three-letter label above the value           |
-| Bar with letter   | First letter of the module next to a level bar |
-| Line chart        | Recent history as a small chart              |
-| Bar with symbol   | Module symbol next to a level bar            |
-| Symbol with value | Module symbol above the value                |
-| Segmented meters  | Module symbol above a five-step level meter  |
-| Load rings        | Module symbol inside a circular level meter   |
-| Large readings    | Large value above a color-coded module label  |
+Pick one under right-click → **Widget**. Each row shows, from left to right:
+CPU, GPU, memory, disk, network, battery and display.
 
+| Style | Looks like | Icon shows |
+|-------|------------|------------|
+| **Mini** | <img src="docs/styles/Mini.png" width="330" alt="Mini style"> | Three-letter label above the value |
+| **Bar with letter** | <img src="docs/styles/BarWithLetter.png" width="330" alt="Bar with letter style"> | First letter of the module next to a level bar |
+| **Line chart** | <img src="docs/styles/LineChart.png" width="330" alt="Line chart style"> | Recent history as a small chart |
+| **Bar with symbol** | <img src="docs/styles/BarWithSymbol.png" width="330" alt="Bar with symbol style"> | Module symbol next to a level bar |
+| **Symbol with value** | <img src="docs/styles/SymbolWithValue.png" width="330" alt="Symbol with value style"> | Module symbol above the value |
+| **Segmented meters** | <img src="docs/styles/SegmentedMeters.png" width="330" alt="Segmented meters style"> | Module symbol above a five-step level meter |
+| **Load rings** | <img src="docs/styles/LoadRings.png" width="330" alt="Load rings style"> | Module symbol inside a circular level meter |
+| **Large readings** | <img src="docs/styles/LargeReadings.png" width="330" alt="Large readings style"> | Large value above a color-coded module label |
+
+The examples are drawn at twice the size of a tray icon on a 150 % display;
+on the taskbar the icons are 16 px (100 %), 24 px (150 %) or 32 px (200 %).
 The network icon always shows its two speeds, except in the line chart style.
 
 ### Switching monitor inputs
