@@ -35,6 +35,7 @@ namespace WinStats
         [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
         [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+        [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
         [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int n, uint dpi);
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int n);
@@ -102,6 +103,30 @@ namespace WinStats
 
     static class Draw
     {
+        public static int TrayStrokeWidth(int size)
+        {
+            return Math.Max(1, (int)Math.Round(size / 16f, MidpointRounding.AwayFromZero));
+        }
+
+        public static GraphicsPath RoundedBox(RectangleF r, float radius)
+        {
+            float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+            GraphicsPath path = new GraphicsPath();
+            path.AddArc(r.Left, r.Top, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        // Darken the accents on a light taskbar so thin strokes and small type stay visible.
+        public static Color TrayAccent(Color accent, Color fg)
+        {
+            if (fg.GetBrightness() > 0.5f) return accent;
+            return Color.FromArgb(accent.R * 2 / 3, accent.G * 2 / 3, accent.B * 2 / 3);
+        }
+
         // Draws text as large as fits into the rectangle, centered.
         public static void Fit(Graphics g, string t, RectangleF r, Color c, bool bold)
         {
@@ -221,7 +246,7 @@ namespace WinStats
             if (History.Count > 120) History.RemoveAt(0);
         }
 
-        // Symbol for the "bar with symbol" widget, drawn into the square r. Default: the first letter.
+        // Symbol for the bar and value widgets, drawn into the square r.
         protected virtual void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
             Draw.Fit(g, Label.Substring(0, 1), r, ((SolidBrush)b).Color, true);
@@ -251,7 +276,7 @@ namespace WinStats
         protected static void Outline(Graphics g, Pen p, RectangleF r, float x, float y, float w, float h)
         {
             RectangleF o = Box(r, p, x, y, w, h);
-            g.DrawRectangle(p, o.X, o.Y, o.Width, o.Height);
+            using (GraphicsPath path = Draw.RoundedBox(o, p.Width)) g.DrawPath(p, path);
         }
 
         // style: 0 = mini (label + value), 1 = bar, 2 = line chart, 3 = bar with symbol, 4 = symbol with value
@@ -259,38 +284,54 @@ namespace WinStats
         {
             if (style == 2)
             {
-                Draw.Chart(g, new RectangleF(1, 1, s - 2, s - 2), History, HistoryMax, Color, Math.Max(8, s / 2));
-                using (Pen p = new Pen(Color.FromArgb(130, fg))) g.DrawRectangle(p, 0.5f, 0.5f, s - 1, s - 1);
+                float baseline = s - 1.5f;
+                Draw.Chart(g, new RectangleF(1, 2, s - 2, baseline - 2), History, HistoryMax,
+                    Draw.TrayAccent(Color, fg), Math.Max(8, s / 2));
+                using (Pen p = new Pen(Color.FromArgb(85, fg))) g.DrawLine(p, 1, baseline, s - 1, baseline);
             }
             else if (style == 4)
             {
                 // Symbol on top, value below.
                 float a = (float)Math.Round(s * 0.48f);
-                using (Pen p = new Pen(fg, Math.Max(1, s / 16)))
+                using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(s)))
                 using (SolidBrush b = new SolidBrush(fg))
                     DrawSymbol(g, new RectangleF((float)Math.Floor((s - a) / 2), 0, a, a), p, b);
-                Draw.Fit(g, IconText, new RectangleF(0, a, s, s - a), fg, true);
+                float top = a + Math.Max(1, s / 16);
+                Draw.Fit(g, IconText, new RectangleF(0, top, s, s - top), fg, true);
             }
             else if (style == 1 || style == 3)
             {
-                float x = (float)Math.Round(s * 0.58f);
+                float w = (float)Math.Round(s * 0.24f);
+                float x = s - w - Math.Max(1, s / 16);
                 if (style == 3)
                 {
-                    float a = (float)Math.Round(s * 0.68f);
-                    x = a + Math.Max(1, s / 16);
-                    using (Pen p = new Pen(fg, Math.Max(1, s / 16)))   // whole-pixel stroke width
+                    float a = x - Math.Max(1, s / 16);
+                    using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(s)))
                     using (SolidBrush b = new SolidBrush(fg))
                         DrawSymbol(g, new RectangleF(0, (float)Math.Floor((s - a) / 2), a, a), p, b);
                 }
-                else Draw.Fit(g, Label.Substring(0, 1), new RectangleF(0, s * 0.15f, s * 0.52f, s * 0.7f), fg, true);
-                float w = s - x - 1, h = (s - 2) * U.Clamp01(Value);
-                using (SolidBrush b = new SolidBrush(Color)) g.FillRectangle(b, x, s - 1 - h, w, h);
-                using (Pen p = new Pen(Color.FromArgb(160, fg))) g.DrawRectangle(p, x - 0.5f, 0.5f, w + 1, s - 1);
+                else Draw.Fit(g, Label.Substring(0, 1), new RectangleF(0, 0, x - 1, s), fg, true);
+
+                float inset = Math.Max(1, (float)Math.Round(s / 8f));
+                float trackHeight = s - inset * 2, bottom = s - inset;
+                using (GraphicsPath track = Draw.RoundedBox(new RectangleF(x, inset, w, trackHeight), w / 2))
+                {
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb(65, fg))) g.FillPath(b, track);
+                    float fillHeight = trackHeight * U.Clamp01(Value);
+                    if (fillHeight > 0)
+                    {
+                        fillHeight = Math.Max(1, (float)Math.Round(fillHeight));
+                        GraphicsState state = g.Save();
+                        g.SetClip(new RectangleF(x, bottom - fillHeight, w, fillHeight), CombineMode.Intersect);
+                        using (SolidBrush b = new SolidBrush(Draw.TrayAccent(Color, fg))) g.FillPath(b, track);
+                        g.Restore(state);
+                    }
+                }
             }
             else
             {
-                Draw.Fit(g, Label, new RectangleF(0, 0, s, s * 0.36f), Color.FromArgb(210, fg), false);
-                Draw.Fit(g, IconText, new RectangleF(0, s * 0.38f, s, s * 0.62f), fg, true);
+                Draw.Fit(g, Label, new RectangleF(1, 0, s - 2, s * 0.39f), Color.FromArgb(185, fg), true);
+                Draw.Fit(g, IconText, new RectangleF(1, s * 0.4f, s - 2, s * 0.6f), fg, true);
             }
         }
     }
@@ -350,12 +391,12 @@ namespace WinStats
         protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
             // Chip with pins.
-            Outline(g, p, r, 0.2f, 0.2f, 0.6f, 0.6f);
+            Outline(g, p, r, 0.22f, 0.22f, 0.56f, 0.56f);
             g.FillRectangle(b, Box(r, null, 0.38f, 0.38f, 0.24f, 0.24f));
-            foreach (float t in new[] { 0.35f, 0.65f })
+            foreach (float t in new[] { 0.36f, 0.64f })
             {
-                Line(g, p, r, t, 0.02f, t, 0.2f); Line(g, p, r, t, 0.8f, t, 0.98f);
-                Line(g, p, r, 0.02f, t, 0.2f, t); Line(g, p, r, 0.8f, t, 0.98f, t);
+                Line(g, p, r, t, 0.05f, t, 0.22f); Line(g, p, r, t, 0.78f, t, 0.95f);
+                Line(g, p, r, 0.05f, t, 0.22f, t); Line(g, p, r, 0.78f, t, 0.95f, t);
             }
         }
 
@@ -459,10 +500,10 @@ namespace WinStats
         protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
             // Graphics card with two fans and its slot connector.
-            Outline(g, p, r, 0.04f, 0.22f, 0.92f, 0.46f);
-            g.FillEllipse(b, Box(r, null, 0.17f, 0.32f, 0.26f, 0.26f));
-            g.FillEllipse(b, Box(r, null, 0.57f, 0.32f, 0.26f, 0.26f));
-            g.FillRectangle(b, Box(r, null, 0.16f, 0.68f, 0.44f, 0.14f));
+            Outline(g, p, r, 0.05f, 0.19f, 0.9f, 0.52f);
+            g.FillEllipse(b, Box(r, null, 0.2f, 0.35f, 0.2f, 0.2f));
+            g.FillEllipse(b, Box(r, null, 0.6f, 0.35f, 0.2f, 0.2f));
+            g.FillRectangle(b, Box(r, null, 0.23f, 0.71f, 0.37f, 0.16f));
         }
 
         public override void Details(List<string[]> rows)
@@ -507,8 +548,8 @@ namespace WinStats
         protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
             // Memory module with contact pins.
-            Outline(g, p, r, 0.04f, 0.26f, 0.92f, 0.36f);
-            foreach (float t in new[] { 0.2f, 0.4f, 0.6f, 0.8f }) Line(g, p, r, t, 0.62f, t, 0.84f);
+            Outline(g, p, r, 0.05f, 0.17f, 0.9f, 0.36f);
+            foreach (float t in new[] { 0.2f, 0.4f, 0.6f, 0.8f }) Line(g, p, r, t, 0.53f, t, 0.85f);
         }
 
         public override void Details(List<string[]> rows)
@@ -567,14 +608,14 @@ namespace WinStats
             Push(r + w);
         }
 
-        protected override void DrawSymbol(Graphics g, RectangleF q, Pen p, Brush b)
+        protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
-            // Storage cylinder.
-            g.DrawEllipse(p, Box(q, p, 0.12f, 0.08f, 0.76f, 0.3f));
-            g.DrawArc(p, Box(q, p, 0.12f, 0.35f, 0.76f, 0.3f), 0, 180);
-            g.DrawArc(p, Box(q, p, 0.12f, 0.62f, 0.76f, 0.3f), 0, 180);
-            Line(g, p, q, 0.12f, 0.23f, 0.12f, 0.77f);
-            Line(g, p, q, 0.88f, 0.23f, 0.88f, 0.77f);
+            RectangleF top = Box(r, p, 0.17f, 0.08f, 0.66f, 0.34f);
+            RectangleF bottom = Box(r, p, 0.17f, 0.58f, 0.66f, 0.34f);
+            g.DrawEllipse(p, top);
+            g.DrawArc(p, bottom, 0, 180);
+            g.DrawLine(p, top.Left, top.Top + top.Height / 2, bottom.Left, bottom.Top + bottom.Height / 2);
+            g.DrawLine(p, top.Right, top.Top + top.Height / 2, bottom.Right, bottom.Top + bottom.Height / 2);
         }
 
         public override void Details(List<string[]> rows)
@@ -640,8 +681,29 @@ namespace WinStats
         public override void DrawIcon(Graphics g, int s, Color fg, int style)
         {
             if (style == 2) { base.DrawIcon(g, s, fg, style); return; }
-            Draw.Fit(g, U.Short(up), new RectangleF(0, 0, s, s * 0.5f), Up, true);
-            Draw.Fit(g, U.Short(down), new RectangleF(0, s * 0.5f, s, s * 0.5f), Down, true);
+            float row = s / 2f;
+            DrawSpeed(g, 0, s, U.Short(up), Draw.TrayAccent(Up, fg), true);
+            DrawSpeed(g, row, s, U.Short(down), Draw.TrayAccent(Down, fg), false);
+        }
+
+        static void DrawSpeed(Graphics g, float y, int size, string speed, Color color, bool upload)
+        {
+            float rowHeight = size / 2f;
+            float width = (float)Math.Round(size * 3 / 16f), height = (float)Math.Round(size * 5 / 16f);
+            float stemWidth = Draw.TrayStrokeWidth(size);
+            float stemX = (float)Math.Floor((width - stemWidth) / 2);
+            float stemHeight = (float)Math.Round(height * 0.4f);
+            float top = (float)Math.Floor(y + (rowHeight - height) / 2);
+            float bottom = top + height;
+            float tip = upload ? top : bottom;
+            float shoulder = upload ? bottom - stemHeight : top + stemHeight;
+            using (SolidBrush b = new SolidBrush(color))
+            {
+                g.FillPolygon(b, new[] { new PointF(width / 2, tip), new PointF(0, shoulder), new PointF(width, shoulder) });
+                g.FillRectangle(b, stemX, upload ? shoulder : top, stemWidth, stemHeight);
+            }
+            float textLeft = width + Math.Max(1, size / 16);
+            Draw.Fit(g, speed, new RectangleF(textLeft, y, size - textLeft, rowHeight), color, true);
         }
 
         public override void Details(List<string[]> rows)
@@ -681,10 +743,18 @@ namespace WinStats
 
         protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
-            // Battery, with a bolt-like centre line while plugged in.
-            Outline(g, p, r, 0.04f, 0.28f, 0.8f, 0.44f);
-            g.FillRectangle(b, Box(r, null, 0.84f, 0.38f, 0.12f, 0.24f));
-            if (Plugged) { Line(g, p, r, 0.52f, 0.36f, 0.36f, 0.52f); Line(g, p, r, 0.36f, 0.52f, 0.52f, 0.48f); Line(g, p, r, 0.52f, 0.48f, 0.36f, 0.64f); }
+            Outline(g, p, r, 0.05f, 0.20f, 0.76f, 0.60f);
+            g.FillRectangle(b, Box(r, null, 0.81f, 0.36f, 0.16f, 0.28f));
+            if (Plugged)
+            {
+                PointF[] bolt = {
+                    new PointF(0.49f, 0.28f), new PointF(0.25f, 0.55f), new PointF(0.42f, 0.55f),
+                    new PointF(0.36f, 0.72f), new PointF(0.62f, 0.44f), new PointF(0.45f, 0.44f)
+                };
+                for (int i = 0; i < bolt.Length; i++)
+                    bolt[i] = new PointF(r.X + bolt[i].X * r.Width, r.Y + bolt[i].Y * r.Height);
+                g.FillPolygon(b, bolt);
+            }
         }
 
         public override void Details(List<string[]> rows)
@@ -904,19 +974,19 @@ namespace WinStats
         protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
         {
             // Monitor on a stand.
-            Outline(g, p, r, 0.04f, 0.12f, 0.92f, 0.58f);
-            Line(g, p, r, 0.5f, 0.7f, 0.5f, 0.88f);
-            Line(g, p, r, 0.26f, 0.88f, 0.74f, 0.88f);
+            Outline(g, p, r, 0.04f, 0.09f, 0.92f, 0.64f);
+            Line(g, p, r, 0.5f, 0.73f, 0.5f, 0.9f);
+            Line(g, p, r, 0.25f, 0.9f, 0.75f, 0.9f);
         }
 
         public override void DrawIcon(Graphics g, int s, Color fg, int style)
         {
             if (style == 0 || style == 4) { base.DrawIcon(g, s, fg, style); return; }
             // No level to chart: a monitor with the active input written on its screen.
-            using (Pen p = new Pen(fg, Math.Max(1, s / 16)))
+            using (Pen p = new Pen(fg, Draw.TrayStrokeWidth(s)))
             using (SolidBrush b = new SolidBrush(fg))
                 DrawSymbol(g, new RectangleF(0, 0, s, s), p, b);
-            Draw.Fit(g, IconText, new RectangleF(s * 0.14f, s * 0.22f, s * 0.72f, s * 0.38f), fg, true);
+            Draw.Fit(g, IconText, new RectangleF(s * 0.12f, s * 0.15f, s * 0.76f, s * 0.52f), fg, true);
         }
 
         public override void Details(List<string[]> rows)
@@ -1078,6 +1148,7 @@ namespace WinStats
         public static readonly object Sync = new object();
         const string Key = @"Software\WinStats";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const int SmallIconWidth = 49;   // SM_CXSMICON
         static readonly string[] Styles = { "Mini (label + value)", "Bar with letter", "Line chart", "Bar with symbol", "Symbol with value" };
 
         List<Module> mods;
@@ -1113,6 +1184,8 @@ namespace WinStats
                     IntPtr h = Native.FindWindow("Shell_TrayWnd", null);
                     int d = h == IntPtr.Zero ? 0 : (int)Native.GetDpiForWindow(h);
                     if (d > 0) return d;
+                    d = (int)Native.GetDpiForSystem();
+                    if (d > 0) return d;
                 }
                 catch { }
                 return 96;
@@ -1124,8 +1197,14 @@ namespace WinStats
         {
             get
             {
-                try { return Math.Max(16, Native.GetSystemMetricsForDpi(49, (uint)Dpi)); }
-                catch { return Math.Max(16, Native.GetSystemMetrics(49)); }
+                int dpi = Dpi;
+                try
+                {
+                    int size = Native.GetSystemMetricsForDpi(SmallIconWidth, (uint)dpi);
+                    if (size > 0) return size;
+                }
+                catch (EntryPointNotFoundException) { return Math.Max(16, Native.GetSystemMetrics(SmallIconWidth)); }
+                return Math.Max(16, (int)Math.Round(16 * dpi / 96f));
             }
         }
 
@@ -1390,7 +1469,7 @@ namespace WinStats
         [STAThread]
         static void Main(string[] args)
         {
-            // Per-monitor DPI aware, so Windows never bitmap-stretches the icons or the popup.
+            // Use the taskbar's physical pixel size when drawing the icons and popup.
             bool pm = false;
             try { pm = Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             if (!pm) Native.SetProcessDPIAware();
