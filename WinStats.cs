@@ -44,6 +44,31 @@ namespace WinStats
         [DllImport("kernel32.dll")] public static extern ulong GetTickCount64();
         [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int v, int size);
 
+        // DXGI, only to learn each graphics adapter's name, memory size and LUID (the id the GPU counters use).
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DXGI_ADAPTER_DESC
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description;
+            public uint VendorId, DeviceId, SubSysId, Revision;
+            public UIntPtr DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+            public uint LuidLow;
+            public int LuidHigh;
+        }
+        // The Slot* methods only keep the COM vtable layout; they are never called.
+        [ComImport, Guid("7b7166ec-21c7-44ae-b21a-c9ae321ae369"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        public interface IDXGIFactory
+        {
+            void Slot0(); void Slot1(); void Slot2(); void Slot3();
+            [PreserveSig] int EnumAdapters(uint index, out IDXGIAdapter adapter);
+        }
+        [ComImport, Guid("2411e7e1-12ac-4ccf-bd14-9798e8534dc0"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        public interface IDXGIAdapter
+        {
+            void Slot0(); void Slot1(); void Slot2(); void Slot3(); void Slot4();
+            [PreserveSig] int GetDesc(out DXGI_ADAPTER_DESC desc);
+        }
+        [DllImport("dxgi.dll")] public static extern int CreateDXGIFactory1(ref Guid iid, out IDXGIFactory factory);
+
         // Monitor control over DDC/CI (the same channel the monitor's own vendor tools use).
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct PHYSICAL_MONITOR
@@ -470,7 +495,20 @@ namespace WinStats
         Dictionary<string, CounterSample> prev = new Dictionary<string, CounterSample>();
         SortedDictionary<string, float> util = new SortedDictionary<string, float>();
         SortedDictionary<string, long> used = new SortedDictionary<string, long>();
-        List<string> names = new List<string>();
+        class Adapter
+        {
+            public string Luid, Name;
+            public long Vram;
+            public bool Software;   // Microsoft Basic Render Driver: not a real GPU
+        }
+
+        List<Adapter> adapters = new List<Adapter>();
+        DateTime adaptersRead;
+        Adapter shown;
+
+        // Name of the adapter the tray icon follows; empty = whichever is busiest.
+        // Stored by name because Windows hands out new LUIDs on every boot.
+        public string Selected = "";
 
         public GpuModule()
         {
@@ -481,20 +519,58 @@ namespace WinStats
                 if (PerformanceCounterCategory.Exists("GPU Adapter Memory")) mem = new PerformanceCounterCategory("GPU Adapter Memory");
             }
             catch { }
-            try
-            {
-                using (ManagementObjectSearcher s = new ManagementObjectSearcher("select Name from Win32_VideoController"))
-                    foreach (ManagementBaseObject o in s.Get()) names.Add(Convert.ToString(o["Name"]));
-            }
-            catch { }
+            ReadAdapters();
         }
 
         public override bool Available { get { return eng != null; } }
 
+        void ReadAdapters()
+        {
+            List<Adapter> list = new List<Adapter>();
+            try
+            {
+                Guid iid = typeof(Native.IDXGIFactory).GUID;
+                Native.IDXGIFactory factory;
+                if (Native.CreateDXGIFactory1(ref iid, out factory) >= 0 && factory != null)
+                {
+                    for (uint i = 0; i < 16; i++)
+                    {
+                        Native.IDXGIAdapter a;
+                        if (factory.EnumAdapters(i, out a) < 0 || a == null) break;
+                        Native.DXGI_ADAPTER_DESC d;
+                        if (a.GetDesc(out d) >= 0)
+                        {
+                            Adapter ad = new Adapter();
+                            ad.Luid = ("0x" + d.LuidHigh.ToString("X8") + "_0x" + d.LuidLow.ToString("X8")).ToUpperInvariant();
+                            ad.Name = (d.Description ?? "").Trim();
+                            ad.Vram = (long)d.DedicatedVideoMemory.ToUInt64();
+                            ad.Software = d.VendorId == 0x1414 && d.DeviceId == 0x8c;
+                            int same = list.Count(x => x.Name == ad.Name || x.Name.StartsWith(ad.Name + " #"));
+                            if (same > 0) ad.Name += " #" + (same + 1);   // two identical cards
+                            if (!list.Any(x => x.Luid == ad.Luid)) list.Add(ad);
+                        }
+                        Marshal.ReleaseComObject(a);
+                    }
+                    Marshal.ReleaseComObject(factory);
+                }
+            }
+            catch { }
+            adapters = list;
+            adaptersRead = DateTime.UtcNow;
+        }
+
+        Adapter Find(string luid) { return adapters.FirstOrDefault(a => a.Luid == luid); }
+
+        // Names of the real GPUs, for the selection menu.
+        public List<string> AdapterNames()
+        {
+            lock (App.Sync) return adapters.Where(a => !a.Software).Select(a => a.Name).ToList();
+        }
+
         static string Luid(string instance)
         {
             int a = instance.IndexOf("luid_"), b = instance.IndexOf("_phys");
-            return a < 0 || b < a ? instance : instance.Substring(a + 5, b - a - 5);
+            return (a < 0 || b < a ? instance : instance.Substring(a + 5, b - a - 5)).ToUpperInvariant();
         }
 
         public override void Update(double dt)
@@ -543,10 +619,25 @@ namespace WinStats
             }
             util = u; used = m;
 
-            float max = u.Count == 0 ? 0 : u.Values.Max();
-            Value = max / 100f;
-            int pct = (int)Math.Round(max);
-            IconText = pct.ToString(); BigText = pct + "%"; Tooltip = "GPU " + pct + "%";
+            // A LUID we have no name for means the adapters changed (driver restart, eGPU): read them again, but not constantly.
+            if (u.Keys.Any(k => Find(k) == null) && (DateTime.UtcNow - adaptersRead).TotalSeconds > 30) ReadAdapters();
+
+            shown = Selected.Length == 0 ? null : adapters.FirstOrDefault(a => a.Name == Selected);
+            float load = 0;
+            if (shown != null) u.TryGetValue(shown.Luid, out load);
+            else
+            {
+                foreach (KeyValuePair<string, float> kv in u)
+                {
+                    Adapter a = Find(kv.Key);
+                    if (a != null && a.Software) continue;
+                    load = Math.Max(load, kv.Value);
+                }
+            }
+            Value = load / 100f;
+            int pct = (int)Math.Round(load);
+            IconText = pct.ToString(); BigText = pct + "%";
+            Tooltip = "GPU " + pct + "%" + (shown != null ? " - " + shown.Name : "");
             Push(pct);
         }
 
@@ -561,19 +652,19 @@ namespace WinStats
 
         public override void Details(List<string[]> rows)
         {
+            rows.Add(new[] { "Icon shows", shown != null ? shown.Name : "Busiest GPU" });
             int i = 0;
             foreach (string luid in util.Keys.Union(used.Keys).Distinct().OrderBy(x => x))
             {
+                Adapter a = Find(luid);
+                if (a != null && a.Software) continue;
                 float u; long m;
                 util.TryGetValue(luid, out u);
-                string v = u.ToString("0") + "%";
-                if (used.TryGetValue(luid, out m)) v += "  ·  " + U.Bytes(m);
-                rows.Add(new[] { "Adapter " + i++, v });
-            }
-            if (names.Count > 0)
-            {
-                rows.Add(new[] { "Installed", null });
-                foreach (string n in names) rows.Add(new[] { n, "" });
+                rows.Add(new[] { a != null ? a.Name : "Adapter " + i, null });
+                rows.Add(new[] { "Load", u.ToString("0") + "%" });
+                if (used.TryGetValue(luid, out m))
+                    rows.Add(new[] { "Dedicated memory", a != null && a.Vram > 0 ? U.Bytes(m) + " of " + U.Bytes(a.Vram) : U.Bytes(m) });
+                i++;
             }
         }
     }
@@ -1286,6 +1377,11 @@ namespace WinStats
                 interval = Math.Max(1, Math.Min(10, Convert.ToInt32(k.GetValue("Interval", 1))));
             }
             mods = CreateModules();
+            GpuModule gpu = mods.OfType<GpuModule>().FirstOrDefault();
+            if (gpu != null)
+            {
+                using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key)) gpu.Selected = Convert.ToString(k.GetValue("Gpu", ""));
+            }
             BuildMenu();
             foreach (Module m in mods)
             {
@@ -1433,8 +1529,32 @@ namespace WinStats
 
             ToolStripMenuItem auto = new ToolStripMenuItem("Start with Windows", null, delegate { Autostart = !Autostart; });
 
+            // Which graphics adapter the GPU icon follows; the entries are filled in when the menu opens.
+            GpuModule gpu = mods.OfType<GpuModule>().FirstOrDefault();
+            ToolStripMenuItem gpuMenu = new ToolStripMenuItem("GPU shown");
+            Action fillGpu = delegate
+            {
+                gpuMenu.DropDownItems.Clear();
+                List<string> choices = new List<string>();
+                choices.Add("");
+                choices.AddRange(gpu.AdapterNames());
+                foreach (string c in choices)
+                {
+                    string name = c;
+                    ToolStripMenuItem it = new ToolStripMenuItem(name.Length == 0 ? "Busiest (automatic)" : name);
+                    it.Checked = gpu.Selected == name;
+                    it.Click += delegate
+                    {
+                        gpu.Selected = name;
+                        using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key)) k.SetValue("Gpu", name);
+                    };
+                    gpuMenu.DropDownItems.Add(it);
+                }
+            };
+
             menu.Items.Add(modules);
             menu.Items.Add(widget);
+            if (gpu != null) { fillGpu(); menu.Items.Add(gpuMenu); }
             menu.Items.Add(rate);
             menu.Items.Add(auto);
             menu.Items.Add(new ToolStripSeparator());
@@ -1446,6 +1566,7 @@ namespace WinStats
                 for (int i = 0; i < widget.DropDownItems.Count; i++) ((ToolStripMenuItem)widget.DropDownItems[i]).Checked = i == (int)style;
                 foreach (ToolStripMenuItem it in rate.DropDownItems) it.Checked = (int)it.Tag == interval;
                 auto.Checked = Autostart;
+                if (gpu != null) fillGpu();
             };
         }
 

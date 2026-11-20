@@ -31,7 +31,7 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 |     | Module  | Tray icon shows | Click opens |
 |:---:|---------|-----------------|-------------|
 | <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load in % | History, per-core bars, thermal zone, uptime, top processes |
-| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load of the busiest adapter | History, load and dedicated memory per adapter, installed GPUs |
+| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load of the busiest GPU, or of the one you pick | History, load and dedicated memory of each GPU by name |
 | <img src="docs/modules/memory.png" width="40" alt=""> | **Memory** | Used RAM in % | History, used / available / committed, top processes |
 | <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space on the system drive | Read/write speed and activity history, free space of all drives |
 | <img src="docs/modules/network.png" width="40" alt=""> | **Network** | Upload (red) and download (blue) speed | History, interface, local IP, totals since start |
@@ -50,6 +50,7 @@ flyout (the `^` arrow): drag them onto the taskbar, or enable them under
 - **Right-click** any icon:
   - **Modules** – switch individual icons on or off
   - **Widget** – how the icons are drawn (see below)
+  - **GPU shown** – which graphics adapter the GPU icon follows: the busiest one (default) or a specific GPU
   - **Update interval** – 1, 2 or 5 seconds
   - **Start with Windows**
   - **Task Manager**, **Quit WinStats**
@@ -119,6 +120,5 @@ language features.
 
 - No fan or per-component temperature sensors: on Windows these need a kernel
   driver. The CPU popup shows the ACPI thermal zone temperature where available.
-- GPU adapters are numbered rather than named in the popup.
 - Per-process CPU time of some protected system processes cannot be read
   without administrator rights; those are left out of the top-processes list.
