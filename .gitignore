@@ -1,0 +1,4 @@
+# Build output (run build.cmd)
+*.exe
+*.pdb
+preview.png
