@@ -36,9 +36,11 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 | <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space, active time or temperature of the system drive | Read/write speed, active time, free space of all drives, drive temperatures |
 | <img src="docs/modules/network.png" width="40" alt=""> | **Network** | Upload (red) and download (blue) speed | History, interface, local IP, totals since start |
 | <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining, charge/discharge power, energy, health, voltage, cycle count |
+| <img src="docs/modules/bluetooth.png" width="40" alt=""> | **Bluetooth** | Lowest battery level of the connected devices | Battery level of each paired headset or other device that reports one |
 | <img src="docs/modules/display.png" width="40" alt=""> | **Display** | Active monitor input (e.g. `DP1`) | A menu to switch the monitor's input source |
 
-The battery module only appears on machines with a battery.
+The battery module only appears on machines with a battery, the Bluetooth module
+only when a paired device has reported a battery level.
 
 ## Usage
 
@@ -117,6 +119,9 @@ language features.
   `nvml.dll`, which the NVIDIA driver installs. The CPU clock is the base frequency
   times the "% Processor Performance" counter, as in Task Manager. Battery power,
   capacities and cycle count come from the battery driver.
+- Bluetooth battery levels are the device property Windows' Bluetooth settings show;
+  the Bluetooth API (`bthprops.cpl`) tells which devices are connected, since the
+  property keeps its last value after a device disconnects.
 - Icons are drawn as vectors at the exact pixel size the taskbar asks for at its
   current DPI (16 px at 100 %, 24 px at 150 %, 32 px at 200 %) and follow the
   light or dark taskbar theme.
@@ -137,5 +142,9 @@ language features.
 - GPU power is only shown for NVIDIA cards. Laptop GPUs usually report no fan, and
   some integrated GPUs report a fixed clock. Batteries that do not report a cycle
   count or power draw simply leave those rows out.
+- Bluetooth batteries come from devices that report them over the hands-free
+  profile, which covers most headsets and earbuds. Bluetooth LE devices such as mice
+  and keyboards keep their level in a GATT service; they only appear if Windows
+  copies it into the same device property (untested, no such device was at hand).
 - Per-process CPU time of some protected system processes cannot be read
   without administrator rights; those are left out of the top-processes list.

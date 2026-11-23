@@ -92,6 +92,44 @@ namespace WinStats
         [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] public static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr set, ref SP_DEVICE_INTERFACE_DATA data, IntPtr detail, int size, out int required, IntPtr info);
         [DllImport("setupapi.dll")] public static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
 
+        // Battery level of Bluetooth devices: the device property Windows' own Bluetooth settings show.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SP_DEVINFO_DATA { public int cbSize; public Guid ClassGuid; public uint DevInst; public IntPtr Reserved; }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DEVPROPKEY { public Guid fmtid; public uint pid; public DEVPROPKEY(string g, uint p) { fmtid = new Guid(g); pid = p; } }
+        [DllImport("setupapi.dll", EntryPoint = "SetupDiGetClassDevsW", CharSet = CharSet.Unicode)]
+        public static extern IntPtr SetupDiGetAllDevices(IntPtr cls, string enumerator, IntPtr parent, int flags);
+        [DllImport("setupapi.dll")] public static extern bool SetupDiEnumDeviceInfo(IntPtr set, int index, ref SP_DEVINFO_DATA data);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)]
+        public static extern bool SetupDiGetDeviceInstanceId(IntPtr set, ref SP_DEVINFO_DATA data, StringBuilder id, int size, out int required);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)]
+        public static extern bool SetupDiGetDevicePropertyW(IntPtr set, ref SP_DEVINFO_DATA data, ref DEVPROPKEY key, out uint type, byte[] buffer, int size, out int required, int flags);
+
+        // Paired classic Bluetooth devices with their connection state and name.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BLUETOOTH_DEVICE_SEARCH_PARAMS
+        {
+            public int dwSize;
+            public int fReturnAuthenticated, fReturnRemembered, fReturnUnknown, fReturnConnected, fIssueInquiry;
+            public byte cTimeoutMultiplier;
+            public IntPtr hRadio;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct BLUETOOTH_DEVICE_INFO
+        {
+            public int dwSize;
+            public ulong Address;
+            public uint ulClassofDevice;
+            public int fConnected, fRemembered, fAuthenticated;
+            public long stLastSeen1, stLastSeen2, stLastUsed1, stLastUsed2;   // two SYSTEMTIMEs, unused
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)] public string szName;
+        }
+        [DllImport("bthprops.cpl", SetLastError = true)]
+        public static extern IntPtr BluetoothFindFirstDevice(ref BLUETOOTH_DEVICE_SEARCH_PARAMS p, ref BLUETOOTH_DEVICE_INFO info);
+        [DllImport("bthprops.cpl", SetLastError = true)]
+        public static extern bool BluetoothFindNextDevice(IntPtr find, ref BLUETOOTH_DEVICE_INFO info);
+        [DllImport("bthprops.cpl")] public static extern bool BluetoothFindDeviceClose(IntPtr find);
+
         // NVIDIA's management library, installed with the NVIDIA driver; the only driver-free source of GPU power in watts.
         [DllImport("nvml.dll")] public static extern int nvmlInit_v2();
         [DllImport("nvml.dll")] public static extern int nvmlDeviceGetCount_v2(out uint count);
@@ -1299,6 +1337,143 @@ namespace WinStats
         }
     }
 
+    // Battery levels of connected Bluetooth devices (headsets, earbuds) as Windows reports them.
+    class BluetoothModule : Module
+    {
+        class Device
+        {
+            public string Name;
+            public int Level = -1;      // percent
+            public bool Connected;
+        }
+
+        static Native.DEVPROPKEY batteryKey = new Native.DEVPROPKEY("104EA319-6EE2-4701-BD47-8DDBF425BBE5", 2);
+        static Native.DEVPROPKEY nameKey = new Native.DEVPROPKEY("A45C254E-DF1C-4EFD-8020-67D146A850E0", 14);   // FriendlyName
+        static readonly Regex AddressPattern = new Regex(@"[&_]([0-9A-F]{12})(_|\\|$)", RegexOptions.IgnoreCase);
+
+        List<Device> devices = new List<Device>();
+        DateTime scanned = DateTime.MinValue;
+
+        public BluetoothModule()
+        {
+            Name = "Bluetooth"; Label = "BT"; Color = Color.FromArgb(10, 132, 255);
+            Scan();
+        }
+
+        // Shown only when at least one paired device has ever reported a battery level.
+        public override bool Available { get { return devices.Count > 0; } }
+
+        // Every paired device that has a battery level, one entry per Bluetooth address.
+        void Scan()
+        {
+            Dictionary<ulong, Device> found = new Dictionary<ulong, Device>();
+            IntPtr set = Native.SetupDiGetAllDevices(IntPtr.Zero, null, IntPtr.Zero, 0x6);   // DIGCF_PRESENT | DIGCF_ALLCLASSES
+            if (set == new IntPtr(-1)) return;
+            try
+            {
+                Native.SP_DEVINFO_DATA data = new Native.SP_DEVINFO_DATA();
+                data.cbSize = Marshal.SizeOf(data);
+                StringBuilder id = new StringBuilder(512);
+                byte[] buf = new byte[512];
+                for (int i = 0; Native.SetupDiEnumDeviceInfo(set, i, ref data); i++)
+                {
+                    int req;
+                    uint type;
+                    if (!Native.SetupDiGetDeviceInstanceId(set, ref data, id, id.Capacity, out req)) continue;
+                    string inst = id.ToString();
+                    if (!inst.StartsWith("BTH", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!Native.SetupDiGetDevicePropertyW(set, ref data, ref batteryKey, out type, buf, buf.Length, out req, 0) || req < 1) continue;
+                    int level = buf[0];
+                    Match m = AddressPattern.Match(inst);
+                    if (!m.Success || level > 100) continue;
+                    ulong addr = Convert.ToUInt64(m.Groups[1].Value, 16);
+                    string name = "";
+                    if (Native.SetupDiGetDevicePropertyW(set, ref data, ref nameKey, out type, buf, buf.Length, out req, 0) && req > 2)
+                        name = Encoding.Unicode.GetString(buf, 0, req - 2);
+                    if (!found.ContainsKey(addr))
+                    {
+                        Device d = new Device();
+                        d.Name = Regex.Replace(name, @"\s+(Hands-Free( AG)?|Stereo|Avrcp.*)$", "", RegexOptions.IgnoreCase).Trim();
+                        d.Level = level;
+                        d.Connected = true;   // assumed for devices the classic Bluetooth API does not list (Bluetooth LE)
+                        found[addr] = d;
+                    }
+                }
+            }
+            catch { }
+            finally { Native.SetupDiDestroyDeviceInfoList(set); }
+
+            // The battery property keeps its last value after a device disconnects, so ask the Bluetooth stack who is connected.
+            try
+            {
+                Native.BLUETOOTH_DEVICE_SEARCH_PARAMS p = new Native.BLUETOOTH_DEVICE_SEARCH_PARAMS();
+                p.dwSize = Marshal.SizeOf(p);
+                p.fReturnAuthenticated = p.fReturnRemembered = p.fReturnConnected = 1;
+                Native.BLUETOOTH_DEVICE_INFO info = new Native.BLUETOOTH_DEVICE_INFO();
+                info.dwSize = Marshal.SizeOf(info);
+                IntPtr find = Native.BluetoothFindFirstDevice(ref p, ref info);
+                if (find != IntPtr.Zero)
+                {
+                    do
+                    {
+                        Device d;
+                        if (found.TryGetValue(info.Address, out d))
+                        {
+                            d.Connected = info.fConnected != 0;
+                            if (!string.IsNullOrEmpty(info.szName)) d.Name = info.szName;
+                        }
+                        info.dwSize = Marshal.SizeOf(info);
+                    } while (Native.BluetoothFindNextDevice(find, ref info));
+                    Native.BluetoothFindDeviceClose(find);
+                }
+            }
+            catch { }   // no Bluetooth radio
+
+            devices = found.Values.OrderBy(d => d.Name).ToList();
+            scanned = DateTime.UtcNow;
+        }
+
+        public override void Update(double dt)
+        {
+            if ((DateTime.UtcNow - scanned).TotalSeconds >= 10) Scan();   // levels change slowly; a scan walks all devices
+            List<Device> on = devices.Where(d => d.Connected).ToList();
+            if (on.Count == 0)
+            {
+                Value = 0; IconText = "–"; IconUnit = ""; BigText = "–";
+                Tooltip = "Bluetooth: no device connected";
+                Push(0);
+                return;
+            }
+            // The icon shows the emptiest connected device.
+            Device low = on.OrderBy(d => d.Level).First();
+            Value = low.Level / 100f;
+            IconText = low.Level.ToString(); IconUnit = "%"; BigText = low.Level + "%";
+            Tooltip = "Bluetooth: " + string.Join(", ", on.Select(d => d.Name + " " + d.Level + "%"));
+            Push(low.Level);
+        }
+
+        protected override void DrawSymbol(Graphics g, RectangleF r, Pen p, Brush b)
+        {
+            // The Bluetooth rune.
+            PointF[] rune = {
+                new PointF(0.28f, 0.30f), new PointF(0.72f, 0.70f), new PointF(0.50f, 0.90f), new PointF(0.50f, 0.10f),
+                new PointF(0.72f, 0.30f), new PointF(0.28f, 0.70f)
+            };
+            for (int i = 0; i < rune.Length; i++) rune[i] = new PointF(r.X + rune[i].X * r.Width, r.Y + rune[i].Y * r.Height);
+            using (Pen q = (Pen)p.Clone())
+            {
+                q.LineJoin = LineJoin.Round; q.StartCap = q.EndCap = LineCap.Round;
+                g.DrawLines(q, rune);
+            }
+        }
+
+        public override void Details(List<string[]> rows)
+        {
+            foreach (Device d in devices)
+                rows.Add(new[] { d.Name, d.Connected ? d.Level + "%" : "Not connected" });
+        }
+    }
+
     // Switches the input source of external monitors (VCP feature 0x60 over DDC/CI).
     class DisplayModule : Module
     {
@@ -1699,7 +1874,7 @@ namespace WinStats
             List<Module> list = new List<Module>();
             Func<Module>[] makers = {
                 () => new CpuModule(), () => new GpuModule(), () => new RamModule(),
-                () => new DiskModule(), () => new NetModule(), () => new BatteryModule(), () => new DisplayModule()
+                () => new DiskModule(), () => new NetModule(), () => new BatteryModule(), () => new BluetoothModule(), () => new DisplayModule()
             };
             foreach (Func<Module> make in makers)
             {
