@@ -61,18 +61,18 @@ flyout (the `^` arrow): drag them onto the taskbar, or enable them under
 ### Widget styles
 
 Pick one under right-click → **Widget**. Each row shows, from left to right:
-CPU, GPU, memory, disk, network, battery and display.
+CPU, GPU, memory, disk, network, battery, Bluetooth and display.
 
 | Style | Looks like | Icon shows |
 |-------|------------|------------|
-| **Mini** | <img src="docs/styles/Mini.png" width="330" alt="Mini style"> | Three-letter label above the value |
-| **Bar with letter** | <img src="docs/styles/BarWithLetter.png" width="330" alt="Bar with letter style"> | First letter of the module next to a level bar |
-| **Line chart** | <img src="docs/styles/LineChart.png" width="330" alt="Line chart style"> | Recent history as a small chart |
-| **Bar with symbol** | <img src="docs/styles/BarWithSymbol.png" width="330" alt="Bar with symbol style"> | Module symbol next to a level bar |
-| **Symbol with value** | <img src="docs/styles/SymbolWithValue.png" width="330" alt="Symbol with value style"> | Module symbol above the value |
-| **Segmented meters** | <img src="docs/styles/SegmentedMeters.png" width="330" alt="Segmented meters style"> | Module symbol above a five-step level meter |
-| **Load rings** | <img src="docs/styles/LoadRings.png" width="330" alt="Load rings style"> | Module symbol inside a circular level meter |
-| **Large readings** | <img src="docs/styles/LargeReadings.png" width="330" alt="Large readings style"> | Large value above a color-coded module label |
+| **Mini** | <img src="docs/styles/Mini.png" width="376" alt="Mini style"> | Three-letter label above the value |
+| **Bar with letter** | <img src="docs/styles/BarWithLetter.png" width="376" alt="Bar with letter style"> | First letter of the module next to a level bar |
+| **Line chart** | <img src="docs/styles/LineChart.png" width="376" alt="Line chart style"> | Recent history as a small chart |
+| **Bar with symbol** | <img src="docs/styles/BarWithSymbol.png" width="376" alt="Bar with symbol style"> | Module symbol next to a level bar |
+| **Symbol with value** | <img src="docs/styles/SymbolWithValue.png" width="376" alt="Symbol with value style"> | Module symbol above the value |
+| **Segmented meters** | <img src="docs/styles/SegmentedMeters.png" width="376" alt="Segmented meters style"> | Module symbol above a five-step level meter |
+| **Load rings** | <img src="docs/styles/LoadRings.png" width="376" alt="Load rings style"> | Module symbol inside a circular level meter |
+| **Large readings** | <img src="docs/styles/LargeReadings.png" width="376" alt="Large readings style"> | Large value above a color-coded module label |
 
 The examples are drawn at twice the size of a tray icon on a 150 % display;
 on the taskbar the icons are 16 px (100 %), 24 px (150 %) or 32 px (200 %).
