@@ -69,6 +69,21 @@ namespace WinStats
         }
         [DllImport("dxgi.dll")] public static extern int CreateDXGIFactory1(ref Guid iid, out IDXGIFactory factory);
 
+        // GPU temperature from the graphics kernel (what Task Manager shows), opened by the adapter's LUID.
+        [StructLayout(LayoutKind.Sequential)] public struct D3DKMT_OPENADAPTERFROMLUID { public uint LuidLow; public int LuidHigh; public uint hAdapter; }
+        [StructLayout(LayoutKind.Sequential)] public struct D3DKMT_QUERYADAPTERINFO { public uint hAdapter; public int Type; public IntPtr pData; public uint Size; }
+        [StructLayout(LayoutKind.Sequential)] public struct D3DKMT_CLOSEADAPTER { public uint hAdapter; }
+        [DllImport("gdi32.dll")] public static extern int D3DKMTOpenAdapterFromLuid(ref D3DKMT_OPENADAPTERFROMLUID p);
+        [DllImport("gdi32.dll")] public static extern int D3DKMTQueryAdapterInfo(ref D3DKMT_QUERYADAPTERINFO p);
+        [DllImport("gdi32.dll")] public static extern int D3DKMTCloseAdapter(ref D3DKMT_CLOSEADAPTER p);
+
+        // Drive model and temperature via IOCTL_STORAGE_QUERY_PROPERTY; a handle without read/write access is enough.
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool DeviceIoControl(IntPtr h, uint code, byte[] input, int inputSize, byte[] output, int outputSize, out int returned, IntPtr overlapped);
+        [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+
         // Monitor control over DDC/CI (the same channel the monitor's own vendor tools use).
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct PHYSICAL_MONITOR
@@ -124,6 +139,8 @@ namespace WinStats
         }
 
         public static float Clamp01(float v) { return float.IsNaN(v) ? 0 : Math.Max(0, Math.Min(1, v)); }
+
+        public static string Celsius(float c) { return c.ToString("0") + " °C"; }
     }
 
     static class Draw
@@ -173,6 +190,39 @@ namespace WinStats
                 using (SolidBrush b = new SolidBrush(c))
                     g.DrawString(t, f, b, r.X + (r.Width - m.Width) / 2, r.Y + (r.Height - m.Height) / 2 - em * 0.06f, sf);
                 f.Dispose();
+            }
+        }
+
+        // Like Fit, with a half-size suffix raised to the top of the digits (a superscript "%").
+        public static void FitWithSuperscript(Graphics g, string t, string sup, RectangleF r, Color c, bool bold)
+        {
+            if (string.IsNullOrEmpty(t)) return;
+            FontStyle fs = bold ? FontStyle.Bold : FontStyle.Regular;
+            const float ratio = 0.6f;
+            float em = r.Height * 1.2f;
+            using (StringFormat sf = (StringFormat)StringFormat.GenericTypographic.Clone())
+            {
+                sf.FormatFlags |= StringFormatFlags.NoClip | StringFormatFlags.NoWrap;
+                SizeF m, ms;
+                float gap;
+                using (Font f = new Font("Segoe UI", em, fs, GraphicsUnit.Pixel))
+                using (Font fsup = new Font("Segoe UI", em * ratio, fs, GraphicsUnit.Pixel))
+                {
+                    m = g.MeasureString(t, f, 10000, sf); ms = g.MeasureString(sup, fsup, 10000, sf);
+                }
+                gap = em * 0.04f;
+                float total = m.Width + gap + ms.Width;
+                if (total > r.Width) { float k = r.Width / total; em *= k; m = new SizeF(m.Width * k, m.Height * k); ms = new SizeF(ms.Width * k, ms.Height * k); gap *= k; total = r.Width; }
+                float x = r.X + (r.Width - total) / 2, y = r.Y + (r.Height - m.Height) / 2 - em * 0.06f;
+                // Segoe UI digits start about 0.37 em below the top of the line; line both tops up.
+                float ys = y + 0.37f * (em - em * ratio);
+                using (Font f = new Font("Segoe UI", em, fs, GraphicsUnit.Pixel))
+                using (Font fsup = new Font("Segoe UI", em * ratio, fs, GraphicsUnit.Pixel))
+                using (SolidBrush b = new SolidBrush(c))
+                {
+                    g.DrawString(t, f, b, x, y, sf);
+                    g.DrawString(sup, fsup, b, x + m.Width + gap, ys, sf);
+                }
             }
         }
 
@@ -260,10 +310,26 @@ namespace WinStats
         public float HistoryMax = 100;      // 0 = scale to the largest visible value
         public float Value;                 // 0..1, used by the bar widget
         public string IconText = "", BigText = "", Tooltip = "";
+        public string IconUnit = "";        // "%" when IconText is a percentage
+        public static bool PercentSign;     // draw IconUnit as a small superscript next to the value
         public float[] Bars;                // optional row of small bars in the popup (CPU cores)
         public bool WantsProcesses;
         public NotifyIcon Tray;
         public IntPtr HIcon;
+
+        // Optional choice of what the tray icon shows (index 0 is the default), offered under "Icon shows".
+        public string[] Readings;
+        public int Reading;
+
+        // Puts a temperature on the icon; the bar and ring widgets scale it from 0 to 100 °C.
+        protected void ShowTemperature(float c)
+        {
+            IconUnit = "";
+            if (c <= 0) { Value = 0; IconText = "-"; BigText = "n/a"; Push(0); return; }
+            Value = U.Clamp01(c / 100f);
+            IconText = c.ToString("0") + "°"; BigText = U.Celsius(c);
+            Push(c);
+        }
 
         public virtual bool Available { get { return true; } }
         // A module that returns a menu here opens it on left-click instead of the details popup.
@@ -308,6 +374,12 @@ namespace WinStats
         {
             RectangleF o = Box(r, p, x, y, w, h);
             using (GraphicsPath path = Draw.RoundedBox(o, p.Width)) g.DrawPath(p, path);
+        }
+
+        protected void DrawValue(Graphics g, RectangleF r, Color fg)
+        {
+            if (PercentSign && IconUnit.Length > 0) Draw.FitWithSuperscript(g, IconText, IconUnit, r, fg, true);
+            else Draw.Fit(g, IconText, r, fg, true);
         }
 
         protected void PaintSymbol(Graphics g, RectangleF bounds, int size, Color fg)
@@ -370,7 +442,7 @@ namespace WinStats
                 float a = (float)Math.Round(s * 0.48f);
                 PaintSymbol(g, new RectangleF((float)Math.Floor((s - a) / 2), 0, a, a), s, fg);
                 float top = a + Math.Max(1, s / 16);
-                Draw.Fit(g, IconText, new RectangleF(0, top, s, s - top), fg, true);
+                DrawValue(g, new RectangleF(0, top, s, s - top), fg);
             }
             else if (style == WidgetStyle.BarWithLetter || style == WidgetStyle.BarWithSymbol)
             {
@@ -403,13 +475,13 @@ namespace WinStats
             else if (style == WidgetStyle.LoadRings) DrawLoadRing(g, s, fg);
             else if (style == WidgetStyle.LargeReadings)
             {
-                Draw.Fit(g, IconText, new RectangleF(0, 0, s, s * 0.68f), fg, true);
+                DrawValue(g, new RectangleF(0, 0, s, s * 0.68f), fg);
                 Draw.Fit(g, Label, new RectangleF(1, s * 0.69f, s - 2, s * 0.3f), Draw.TrayAccent(Color, fg), true);
             }
             else
             {
                 Draw.Fit(g, Label, new RectangleF(1, 0, s - 2, s * 0.39f), Color.FromArgb(185, fg), true);
-                Draw.Fit(g, IconText, new RectangleF(1, s * 0.4f, s - 2, s * 0.6f), fg, true);
+                DrawValue(g, new RectangleF(1, s * 0.4f, s - 2, s * 0.6f), fg);
             }
         }
     }
@@ -420,6 +492,7 @@ namespace WinStats
         PerformanceCounter[] cores;
         PerformanceCounter[] temps = new PerformanceCounter[0];
         float temp = -1;
+        int loadPct;
 
         public CpuModule()
         {
@@ -447,11 +520,13 @@ namespace WinStats
                 temps = tz.GetInstanceNames().Select(x => new PerformanceCounter("Thermal Zone Information", "Temperature", x)).ToArray();
             }
             catch { }
+            if (temps.Length > 0) Readings = new[] { "Load", "Temperature" };
         }
 
         public override void Update(double dt)
         {
             Value = U.Clamp01(total.NextValue() / 100f);
+            loadPct = (int)Math.Round(Value * 100);
             for (int i = 0; i < cores.Length; i++)
             {
                 try { Bars[i] = U.Clamp01(cores[i].NextValue() / 100f); } catch { Bars[i] = 0; }
@@ -461,8 +536,10 @@ namespace WinStats
             {
                 try { temp = Math.Max(temp, t.NextValue() - 273.15f); } catch { }
             }
-            int pct = (int)Math.Round(Value * 100);
-            IconText = pct.ToString(); BigText = pct + "%"; Tooltip = "CPU " + pct + "%";
+            int pct = loadPct;
+            Tooltip = "CPU " + pct + "%" + (temp > 0 ? ", " + U.Celsius(temp) : "");
+            if (Reading == 1) { ShowTemperature(temp); return; }
+            IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Push(pct);
         }
 
@@ -480,9 +557,9 @@ namespace WinStats
 
         public override void Details(List<string[]> rows)
         {
-            rows.Add(new[] { "Usage", BigText });
+            rows.Add(new[] { "Usage", loadPct + "%" });
             rows.Add(new[] { "Logical cores", Environment.ProcessorCount.ToString() });
-            if (temp > 0) rows.Add(new[] { "Thermal zone", temp.ToString("0") + " °C" });
+            if (temp > 0) rows.Add(new[] { "Temperature (ACPI)", U.Celsius(temp) });
             rows.Add(new[] { "Uptime", U.Duration(Native.GetTickCount64() / 1000.0) });
             rows.Add(new[] { "Top processes", null });
             foreach (KeyValuePair<string, double> p in Procs.TopCpu) rows.Add(new[] { p.Key, p.Value.ToString("0.0") + "%" });
@@ -495,6 +572,7 @@ namespace WinStats
         Dictionary<string, CounterSample> prev = new Dictionary<string, CounterSample>();
         SortedDictionary<string, float> util = new SortedDictionary<string, float>();
         SortedDictionary<string, long> used = new SortedDictionary<string, long>();
+        SortedDictionary<string, float> temps = new SortedDictionary<string, float>();
         class Adapter
         {
             public string Luid, Name;
@@ -520,9 +598,40 @@ namespace WinStats
             }
             catch { }
             ReadAdapters();
+            if (adapters.Any(a => !a.Software && Temperature(a.Luid) > 0)) Readings = new[] { "Load", "Temperature" };
         }
 
         public override bool Available { get { return eng != null; } }
+
+        // Temperature in °C as the graphics kernel reports it (KMTQAITYPE_ADAPTERPERFDATA, WDDM 2.4+); 0 if unknown.
+        static float Temperature(string luid)
+        {
+            try
+            {
+                string[] parts = luid.Split('_');
+                Native.D3DKMT_OPENADAPTERFROMLUID open = new Native.D3DKMT_OPENADAPTERFROMLUID();
+                open.LuidHigh = Convert.ToInt32(parts[0].Substring(2), 16);
+                open.LuidLow = Convert.ToUInt32(parts[1].Substring(2), 16);
+                if (Native.D3DKMTOpenAdapterFromLuid(ref open) != 0) return 0;
+                IntPtr buf = Marshal.AllocHGlobal(64);
+                try
+                {
+                    for (int i = 0; i < 64; i += 4) Marshal.WriteInt32(buf, i, 0);
+                    Native.D3DKMT_QUERYADAPTERINFO q = new Native.D3DKMT_QUERYADAPTERINFO();
+                    q.hAdapter = open.hAdapter; q.Type = 62; q.pData = buf; q.Size = 64;
+                    // D3DKMT_ADAPTER_PERFDATA: Temperature (in tenths of a degree) sits at offset 56.
+                    return Native.D3DKMTQueryAdapterInfo(ref q) == 0 ? Marshal.ReadInt32(buf, 56) / 10f : 0;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buf);
+                    Native.D3DKMT_CLOSEADAPTER close = new Native.D3DKMT_CLOSEADAPTER();
+                    close.hAdapter = open.hAdapter;
+                    Native.D3DKMTCloseAdapter(ref close);
+                }
+            }
+            catch { return 0; }
+        }
 
         void ReadAdapters()
         {
@@ -617,14 +726,26 @@ namespace WinStats
                 }
                 catch { }
             }
-            util = u; used = m;
-
             // A LUID we have no name for means the adapters changed (driver restart, eGPU): read them again, but not constantly.
             if (u.Keys.Any(k => Find(k) == null) && (DateTime.UtcNow - adaptersRead).TotalSeconds > 30) ReadAdapters();
 
+            SortedDictionary<string, float> t = new SortedDictionary<string, float>();
+            if (Readings != null)
+            {
+                foreach (string luid in u.Keys)
+                {
+                    Adapter a = Find(luid);
+                    if (a != null && a.Software) continue;
+                    float c = Temperature(luid);
+                    if (c > 0) t[luid] = c;
+                }
+            }
+            util = u; used = m; temps = t;
+
+            // A chosen GPU shows its own values; otherwise the icon shows the busiest load or the highest temperature.
             shown = Selected.Length == 0 ? null : adapters.FirstOrDefault(a => a.Name == Selected);
-            float load = 0;
-            if (shown != null) u.TryGetValue(shown.Luid, out load);
+            float load = 0, temp = 0;
+            if (shown != null) { u.TryGetValue(shown.Luid, out load); t.TryGetValue(shown.Luid, out temp); }
             else
             {
                 foreach (KeyValuePair<string, float> kv in u)
@@ -633,11 +754,13 @@ namespace WinStats
                     if (a != null && a.Software) continue;
                     load = Math.Max(load, kv.Value);
                 }
+                if (t.Count > 0) temp = t.Values.Max();
             }
-            Value = load / 100f;
             int pct = (int)Math.Round(load);
-            IconText = pct.ToString(); BigText = pct + "%";
-            Tooltip = "GPU " + pct + "%" + (shown != null ? " - " + shown.Name : "");
+            Tooltip = "GPU " + pct + "%" + (temp > 0 ? ", " + U.Celsius(temp) : "") + (shown != null ? " - " + shown.Name : "");
+            if (Reading == 1) { ShowTemperature(temp); return; }
+            Value = load / 100f;
+            IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Push(pct);
         }
 
@@ -652,7 +775,7 @@ namespace WinStats
 
         public override void Details(List<string[]> rows)
         {
-            rows.Add(new[] { "Icon shows", shown != null ? shown.Name : "Busiest GPU" });
+            rows.Add(new[] { "Icon shows", shown != null ? shown.Name : (Reading == 1 ? "Hottest GPU" : "Busiest GPU") });
             int i = 0;
             foreach (string luid in util.Keys.Union(used.Keys).Distinct().OrderBy(x => x))
             {
@@ -662,6 +785,8 @@ namespace WinStats
                 util.TryGetValue(luid, out u);
                 rows.Add(new[] { a != null ? a.Name : "Adapter " + i, null });
                 rows.Add(new[] { "Load", u.ToString("0") + "%" });
+                float c;
+                if (temps.TryGetValue(luid, out c)) rows.Add(new[] { "Temperature", U.Celsius(c) });
                 if (used.TryGetValue(luid, out m))
                     rows.Add(new[] { "Dedicated memory", a != null && a.Vram > 0 ? U.Bytes(m) + " of " + U.Bytes(a.Vram) : U.Bytes(m) });
                 i++;
@@ -684,7 +809,7 @@ namespace WinStats
             Native.GlobalMemoryStatusEx(ref ms);
             Value = ms.ullTotalPhys == 0 ? 0 : 1f - (float)ms.ullAvailPhys / ms.ullTotalPhys;
             int pct = (int)Math.Round(Value * 100);
-            IconText = pct.ToString(); BigText = pct + "%";
+            IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Tooltip = "Memory " + pct + "% (" + U.Bytes(ms.ullTotalPhys - ms.ullAvailPhys) + " of " + U.Bytes(ms.ullTotalPhys) + ")";
             Push(pct);
         }
@@ -709,10 +834,15 @@ namespace WinStats
 
     class DiskModule : Module
     {
-        PerformanceCounter read, write;
-        float r, w;
+        PerformanceCounter read, write, idle;
+        float r, w, active = -1, sysTemp;
         List<string[]> drives = new List<string[]>();
+        List<string[]> drivesTemps = new List<string[]>();
         string sys = Path.GetPathRoot(Environment.SystemDirectory);
+        int sysDisk = -1;                                   // physical disk number of the system drive
+        List<int> disks = new List<int>();
+        Dictionary<int, string> models = new Dictionary<int, string>();
+        HashSet<int> noTemp = new HashSet<int>();           // drives that do not report a temperature (most USB drives)
 
         public DiskModule()
         {
@@ -721,8 +851,57 @@ namespace WinStats
             {
                 read = new PerformanceCounter("PhysicalDisk", "Disk Read Bytes/sec", "_Total");
                 write = new PerformanceCounter("PhysicalDisk", "Disk Write Bytes/sec", "_Total");
+                // Instances are named like "0 C:" - disk number, then its drive letters.
+                string letter = sys.TrimEnd('\\');
+                string inst = "_Total";
+                foreach (string n in new PerformanceCounterCategory("PhysicalDisk").GetInstanceNames())
+                {
+                    int num;
+                    if (!int.TryParse(n.Split(' ')[0], out num)) continue;
+                    disks.Add(num);
+                    if (n.Split(' ').Skip(1).Any(x => string.Equals(x, letter, StringComparison.OrdinalIgnoreCase))) { inst = n; sysDisk = num; }
+                }
+                disks.Sort();
+                // "Active time" as in Task Manager: the share of time the disk was busy.
+                idle = new PerformanceCounter("PhysicalDisk", "% Idle Time", inst);
+                idle.NextValue();
             }
-            catch { read = write = null; }
+            catch { read = write = idle = null; }
+            Readings = sysDisk >= 0 && DriveTemperature(sysDisk) > 0
+                ? new[] { "Used space", "Active time", "Temperature" } : new[] { "Used space", "Active time" };
+        }
+
+        // Temperature of \\.\PhysicalDriveN in °C (NVMe and most internal SATA drives); 0 if unknown.
+        float DriveTemperature(int n)
+        {
+            if (noTemp.Contains(n)) return 0;
+            IntPtr h = Native.CreateFile(@"\\.\PhysicalDrive" + n, 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (h == new IntPtr(-1)) { noTemp.Add(n); return 0; }
+            try
+            {
+                byte[] query = new byte[12], o = new byte[1024];   // STORAGE_PROPERTY_QUERY
+                int ret;
+                if (!models.ContainsKey(n))
+                {
+                    // StorageDeviceProperty: the product id is at the offset stored at byte 16.
+                    string model = "Disk " + n;
+                    if (Native.DeviceIoControl(h, 0x2D1400, query, query.Length, o, o.Length, out ret, IntPtr.Zero))
+                    {
+                        int off = BitConverter.ToInt32(o, 16), end = off;
+                        while (off > 0 && end < ret && o[end] != 0) end++;
+                        if (off > 0 && end > off) model = Encoding.ASCII.GetString(o, off, end - off).Trim();
+                    }
+                    models[n] = model;
+                }
+                BitConverter.GetBytes(52).CopyTo(query, 0);   // StorageDeviceTemperatureProperty
+                Array.Clear(o, 0, o.Length);
+                // STORAGE_TEMPERATURE_DATA_DESCRIPTOR: InfoCount at 12, first sensor's Temperature at 24 + 2.
+                if (!Native.DeviceIoControl(h, 0x2D1400, query, query.Length, o, o.Length, out ret, IntPtr.Zero)
+                    || ret < 28 || BitConverter.ToUInt16(o, 12) == 0) { noTemp.Add(n); return 0; }
+                short c = BitConverter.ToInt16(o, 26);
+                return c > 0 && c < 150 ? c : 0;
+            }
+            finally { Native.CloseHandle(h); }
         }
 
         public override void Update(double dt)
@@ -745,10 +924,33 @@ namespace WinStats
             if (read != null)
             {
                 try { r = read.NextValue(); w = write.NextValue(); } catch { }
+                try { active = Math.Max(0, Math.Min(100, 100 - idle.NextValue())); } catch { active = -1; }
             }
+            List<string[]> t = new List<string[]>();
+            sysTemp = 0;
+            foreach (int n in disks)
+            {
+                float c = DriveTemperature(n);
+                if (c <= 0) continue;
+                t.Add(new[] { models[n], U.Celsius(c) });
+                if (n == sysDisk) sysTemp = c;
+            }
+            drivesTemps = t;
+
             int pct = (int)Math.Round(Value * 100);
-            IconText = pct.ToString(); BigText = pct + "%";
-            Tooltip = "Disk " + sys + " " + pct + "% used";
+            Tooltip = "Disk " + sys + " " + pct + "% used" + (active >= 0 ? ", " + active.ToString("0") + "% active" : "")
+                + (sysTemp > 0 ? ", " + U.Celsius(sysTemp) : "");
+            HistoryMax = Reading == 0 ? 0 : 100;
+            if (Reading == 2) { ShowTemperature(sysTemp); return; }
+            if (Reading == 1)
+            {
+                float a = Math.Max(0, active);
+                Value = a / 100f;
+                IconText = a.ToString("0"); IconUnit = "%"; BigText = a.ToString("0") + "%";
+                Push(a);
+                return;
+            }
+            IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Push(r + w);
         }
 
@@ -766,8 +968,14 @@ namespace WinStats
         {
             rows.Add(new[] { "Read", U.Bytes(r) + "/s" });
             rows.Add(new[] { "Write", U.Bytes(w) + "/s" });
+            if (active >= 0) rows.Add(new[] { "Active time " + sys.TrimEnd('\\'), active.ToString("0") + "%" });
             rows.Add(new[] { "Drives", null });
             rows.AddRange(drives);
+            if (drivesTemps.Count > 0)
+            {
+                rows.Add(new[] { "Temperatures", null });
+                rows.AddRange(drivesTemps);
+            }
         }
     }
 
@@ -880,7 +1088,7 @@ namespace WinStats
             Value = U.Clamp01(ps.BatteryLifePercent);
             int pct = (int)Math.Round(Value * 100);
             Color = Plugged ? Color.FromArgb(52, 199, 89) : (pct <= 20 ? Color.FromArgb(255, 90, 82) : Color.FromArgb(255, 204, 0));
-            IconText = pct.ToString(); BigText = pct + "%";
+            IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Tooltip = "Battery " + pct + "%" + (Plugged ? " (plugged in)" : "");
             Push(pct);
         }
@@ -1128,7 +1336,7 @@ namespace WinStats
             if (style == WidgetStyle.Mini || style == WidgetStyle.SymbolWithValue) { base.DrawIcon(g, s, fg, style); return; }
             // No level to chart: a monitor with the active input written on its screen.
             PaintSymbol(g, new RectangleF(0, 0, s, s), s, fg);
-            Draw.Fit(g, IconText, new RectangleF(s * 0.12f, s * 0.15f, s * 0.76f, s * 0.52f), fg, true);
+            DrawValue(g, new RectangleF(s * 0.12f, s * 0.15f, s * 0.76f, s * 0.52f), fg);
         }
 
         public override void Details(List<string[]> rows)
@@ -1375,6 +1583,7 @@ namespace WinStats
                 foreach (string s in Convert.ToString(k.GetValue("Disabled", "")).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)) disabled.Add(s);
                 style = (WidgetStyle)Math.Max(0, Math.Min(Styles.Length - 1, Convert.ToInt32(k.GetValue("Style", 0))));
                 interval = Math.Max(1, Math.Min(10, Convert.ToInt32(k.GetValue("Interval", 1))));
+                Module.PercentSign = Convert.ToInt32(k.GetValue("PercentSign", 0)) != 0;
             }
             mods = CreateModules();
             GpuModule gpu = mods.OfType<GpuModule>().FirstOrDefault();
@@ -1382,6 +1591,9 @@ namespace WinStats
             {
                 using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key)) gpu.Selected = Convert.ToString(k.GetValue("Gpu", ""));
             }
+            using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key))
+                foreach (Module m in mods.Where(x => x.Readings != null))
+                    m.Reading = Math.Max(0, Math.Min(m.Readings.Length - 1, Convert.ToInt32(k.GetValue("Reading." + m.Name, 0))));
             BuildMenu();
             foreach (Module m in mods)
             {
@@ -1472,6 +1684,7 @@ namespace WinStats
                 k.SetValue("Disabled", string.Join(",", disabled.ToArray()));
                 k.SetValue("Style", (int)style);
                 k.SetValue("Interval", interval);
+                k.SetValue("PercentSign", Module.PercentSign ? 1 : 0);
             }
         }
 
@@ -1516,6 +1729,9 @@ namespace WinStats
                 WidgetStyle option = (WidgetStyle)i;
                 widget.DropDownItems.Add(new ToolStripMenuItem(Styles[i], null, delegate { style = option; Save(); RefreshUi(); }));
             }
+            widget.DropDownItems.Add(new ToolStripSeparator());
+            ToolStripMenuItem percent = new ToolStripMenuItem("Small % sign", null, delegate { Module.PercentSign = !Module.PercentSign; Save(); RefreshUi(); });
+            widget.DropDownItems.Add(percent);
 
             int[] secs = { 1, 2, 5 };
             ToolStripMenuItem rate = new ToolStripMenuItem("Update interval");
@@ -1552,8 +1768,39 @@ namespace WinStats
                 }
             };
 
+            // What each icon shows, for modules that offer a choice (e.g. CPU load or temperature).
+            ToolStripMenuItem shows = new ToolStripMenuItem("Icon shows");
+            foreach (Module m in mods.Where(x => x.Readings != null))
+            {
+                Module mod = m;
+                ToolStripMenuItem sub = new ToolStripMenuItem(mod.Name);
+                for (int i = 0; i < mod.Readings.Length; i++)
+                {
+                    int n = i;
+                    ToolStripMenuItem it = new ToolStripMenuItem(mod.Readings[i]);
+                    it.Click += delegate
+                    {
+                        lock (Sync)
+                        {
+                            mod.Reading = n;
+                            mod.History.Clear();   // the old values are in another unit
+                            try { mod.Update(0); } catch { }
+                        }
+                        using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Key)) k.SetValue("Reading." + mod.Name, n);
+                        RefreshUi();
+                    };
+                    sub.DropDownItems.Add(it);
+                }
+                sub.DropDownOpening += delegate
+                {
+                    for (int i = 0; i < sub.DropDownItems.Count; i++) ((ToolStripMenuItem)sub.DropDownItems[i]).Checked = i == mod.Reading;
+                };
+                shows.DropDownItems.Add(sub);
+            }
+
             menu.Items.Add(modules);
             menu.Items.Add(widget);
+            if (shows.DropDownItems.Count > 0) menu.Items.Add(shows);
             if (gpu != null) { fillGpu(); menu.Items.Add(gpuMenu); }
             menu.Items.Add(rate);
             menu.Items.Add(auto);
@@ -1563,7 +1810,8 @@ namespace WinStats
             menu.Opening += delegate
             {
                 foreach (ToolStripMenuItem it in modules.DropDownItems) it.Checked = !disabled.Contains(((Module)it.Tag).Name);
-                for (int i = 0; i < widget.DropDownItems.Count; i++) ((ToolStripMenuItem)widget.DropDownItems[i]).Checked = i == (int)style;
+                for (int i = 0; i < Styles.Length; i++) ((ToolStripMenuItem)widget.DropDownItems[i]).Checked = i == (int)style;
+                percent.Checked = Module.PercentSign;
                 foreach (ToolStripMenuItem it in rate.DropDownItems) it.Checked = (int)it.Tag == interval;
                 auto.Checked = Autostart;
                 if (gpu != null) fillGpu();

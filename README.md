@@ -30,10 +30,10 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 
 |     | Module  | Tray icon shows | Click opens |
 |:---:|---------|-----------------|-------------|
-| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load in % | History, per-core bars, thermal zone, uptime, top processes |
-| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load of the busiest GPU, or of the one you pick | History, load and dedicated memory of each GPU by name |
+| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load or temperature | History, per-core bars, temperature, uptime, top processes |
+| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load or temperature of the busiest (hottest) GPU, or of the one you pick | History, load, temperature and dedicated memory of each GPU by name |
 | <img src="docs/modules/memory.png" width="40" alt=""> | **Memory** | Used RAM in % | History, used / available / committed, top processes |
-| <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space on the system drive | Read/write speed and activity history, free space of all drives |
+| <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space, active time or temperature of the system drive | Read/write speed, active time, free space of all drives, drive temperatures |
 | <img src="docs/modules/network.png" width="40" alt=""> | **Network** | Upload (red) and download (blue) speed | History, interface, local IP, totals since start |
 | <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining |
 | <img src="docs/modules/display.png" width="40" alt=""> | **Display** | Active monitor input (e.g. `DP1`) | A menu to switch the monitor's input source |
@@ -50,6 +50,7 @@ flyout (the `^` arrow): drag them onto the taskbar, or enable them under
 - **Right-click** any icon:
   - **Modules** – switch individual icons on or off
   - **Widget** – how the icons are drawn (see below)
+  - **Icon shows** – CPU: load or temperature; GPU: load or temperature; Disk: used space, active time or temperature
   - **GPU shown** – which graphics adapter the GPU icon follows: the busiest one (default) or a specific GPU
   - **Update interval** – 1, 2 or 5 seconds
   - **Start with Windows**
@@ -74,6 +75,9 @@ CPU, GPU, memory, disk, network, battery and display.
 The examples are drawn at twice the size of a tray icon on a 150 % display;
 on the taskbar the icons are 16 px (100 %), 24 px (150 %) or 32 px (200 %).
 The network icon always shows its two speeds, except in the line chart style.
+Temperatures appear as `57°`; the bar, meter and ring styles scale them from 0 to 100 °C.
+Percentages appear without a unit unless **Widget → Small % sign** is checked, which adds a
+superscript `%`; it is readable from 24 px (150 %) upward.
 
 ### Switching monitor inputs
 
@@ -106,6 +110,9 @@ language features.
 - Readings come from Windows performance counters (CPU, GPU, disk), Win32 calls
   (memory, battery), `NetworkInterface` statistics (network) and `dxva2.dll`
   (monitor control). Nothing is sent anywhere.
+- Temperatures need no driver or administrator rights: the GPU's comes from the
+  graphics kernel (the value Task Manager shows), the drive's from the storage
+  driver (`IOCTL_STORAGE_QUERY_PROPERTY`), the CPU's from the ACPI thermal zone.
 - Icons are drawn as vectors at the exact pixel size the taskbar asks for at its
   current DPI (16 px at 100 %, 24 px at 150 %, 32 px at 200 %) and follow the
   light or dark taskbar theme.
@@ -118,7 +125,10 @@ language features.
 
 ## Limitations
 
-- No fan or per-component temperature sensors: on Windows these need a kernel
-  driver. The CPU popup shows the ACPI thermal zone temperature where available.
+- The CPU temperature is the ACPI thermal zone the firmware reports, which is
+  close to but not the CPU's own sensor; reading that (and fan speeds) needs a
+  kernel driver on Windows. Machines without a thermal zone offer no CPU temperature.
+- Drive temperatures work for internal NVMe and most SATA drives; USB drives
+  usually do not report one. GPU temperatures need a WDDM 2.4 or newer driver.
 - Per-process CPU time of some protected system processes cannot be read
   without administrator rights; those are left out of the top-processes list.
