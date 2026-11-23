@@ -84,6 +84,23 @@ namespace WinStats
         public static extern bool DeviceIoControl(IntPtr h, uint code, byte[] input, int inputSize, byte[] output, int outputSize, out int returned, IntPtr overlapped);
         [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
 
+        // Battery details (rate, voltage, capacities) through the battery class driver.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SP_DEVICE_INTERFACE_DATA { public int cbSize; public Guid InterfaceClassGuid; public int Flags; public IntPtr Reserved; }
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SetupDiGetClassDevs(ref Guid cls, IntPtr enumerator, IntPtr parent, int flags);
+        [DllImport("setupapi.dll")] public static extern bool SetupDiEnumDeviceInterfaces(IntPtr set, IntPtr info, ref Guid cls, int index, ref SP_DEVICE_INTERFACE_DATA data);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] public static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr set, ref SP_DEVICE_INTERFACE_DATA data, IntPtr detail, int size, out int required, IntPtr info);
+        [DllImport("setupapi.dll")] public static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
+
+        // NVIDIA's management library, installed with the NVIDIA driver; the only driver-free source of GPU power in watts.
+        [DllImport("nvml.dll")] public static extern int nvmlInit_v2();
+        [DllImport("nvml.dll")] public static extern int nvmlDeviceGetCount_v2(out uint count);
+        [DllImport("nvml.dll")] public static extern int nvmlDeviceGetHandleByIndex_v2(uint index, out IntPtr device);
+        [DllImport("nvml.dll", CharSet = CharSet.Ansi)] public static extern int nvmlDeviceGetName(IntPtr device, StringBuilder name, uint length);
+        [DllImport("nvml.dll")] public static extern int nvmlDeviceGetPowerUsage(IntPtr device, out uint milliwatts);
+        [DllImport("nvml.dll")] public static extern int nvmlDeviceGetEnforcedPowerLimit(IntPtr device, out uint milliwatts);
+        [DllImport("nvml.dll")] public static extern int nvmlDeviceGetFanSpeed(IntPtr device, out uint percent);
+
         // Monitor control over DDC/CI (the same channel the monitor's own vendor tools use).
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct PHYSICAL_MONITOR
@@ -141,6 +158,8 @@ namespace WinStats
         public static float Clamp01(float v) { return float.IsNaN(v) ? 0 : Math.Max(0, Math.Min(1, v)); }
 
         public static string Celsius(float c) { return c.ToString("0") + " °C"; }
+
+        public static string Mhz(double mhz) { return mhz >= 1000 ? (mhz / 1000).ToString("0.00") + " GHz" : mhz.ToString("0") + " MHz"; }
     }
 
     static class Draw
@@ -493,6 +512,8 @@ namespace WinStats
         PerformanceCounter[] temps = new PerformanceCounter[0];
         float temp = -1;
         int loadPct;
+        PerformanceCounter perf, baseFreq;   // clock speed = base frequency x "% Processor Performance", as in Task Manager
+        float mhz, baseMhz;
 
         public CpuModule()
         {
@@ -521,6 +542,13 @@ namespace WinStats
             }
             catch { }
             if (temps.Length > 0) Readings = new[] { "Load", "Temperature" };
+            try
+            {
+                perf = new PerformanceCounter("Processor Information", "% Processor Performance", "_Total");
+                baseFreq = new PerformanceCounter("Processor Information", "Processor Frequency", "_Total");
+                perf.NextValue();
+            }
+            catch { perf = baseFreq = null; }
         }
 
         public override void Update(double dt)
@@ -536,8 +564,12 @@ namespace WinStats
             {
                 try { temp = Math.Max(temp, t.NextValue() - 273.15f); } catch { }
             }
+            if (perf != null)
+            {
+                try { baseMhz = baseFreq.NextValue(); mhz = baseMhz * perf.NextValue() / 100f; } catch { mhz = 0; }
+            }
             int pct = loadPct;
-            Tooltip = "CPU " + pct + "%" + (temp > 0 ? ", " + U.Celsius(temp) : "");
+            Tooltip = "CPU " + pct + "%" + (mhz > 0 ? ", " + U.Mhz(mhz) : "") + (temp > 0 ? ", " + U.Celsius(temp) : "");
             if (Reading == 1) { ShowTemperature(temp); return; }
             IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Push(pct);
@@ -558,6 +590,7 @@ namespace WinStats
         public override void Details(List<string[]> rows)
         {
             rows.Add(new[] { "Usage", loadPct + "%" });
+            if (mhz > 0) rows.Add(new[] { "Speed", U.Mhz(mhz) + (baseMhz > 0 ? " (base " + U.Mhz(baseMhz) + ")" : "") });
             rows.Add(new[] { "Logical cores", Environment.ProcessorCount.ToString() });
             if (temp > 0) rows.Add(new[] { "Temperature (ACPI)", U.Celsius(temp) });
             rows.Add(new[] { "Uptime", U.Duration(Native.GetTickCount64() / 1000.0) });
@@ -573,6 +606,7 @@ namespace WinStats
         SortedDictionary<string, float> util = new SortedDictionary<string, float>();
         SortedDictionary<string, long> used = new SortedDictionary<string, long>();
         SortedDictionary<string, float> temps = new SortedDictionary<string, float>();
+        Dictionary<string, Perf> perf = new Dictionary<string, Perf>();
         class Adapter
         {
             public string Luid, Name;
@@ -598,29 +632,70 @@ namespace WinStats
             }
             catch { }
             ReadAdapters();
-            if (adapters.Any(a => !a.Software && Temperature(a.Luid) > 0)) Readings = new[] { "Load", "Temperature" };
+            if (adapters.Any(a => !a.Software && Query(a.Luid).Temp > 0)) Readings = new[] { "Load", "Temperature" };
+            try
+            {
+                if (Native.nvmlInit_v2() == 0)
+                {
+                    uint n;
+                    if (Native.nvmlDeviceGetCount_v2(out n) == 0)
+                        for (uint i = 0; i < n; i++)
+                        {
+                            IntPtr d;
+                            StringBuilder sb = new StringBuilder(96);
+                            if (Native.nvmlDeviceGetHandleByIndex_v2(i, out d) == 0 && Native.nvmlDeviceGetName(d, sb, 96) == 0)
+                                nvidia[sb.ToString().Trim()] = d;
+                        }
+                }
+            }
+            catch { }   // no NVIDIA driver: nvml.dll is missing
         }
 
         public override bool Available { get { return eng != null; } }
 
-        // Temperature in °C as the graphics kernel reports it (KMTQAITYPE_ADAPTERPERFDATA, WDDM 2.4+); 0 if unknown.
-        static float Temperature(string luid)
+        class Perf
         {
+            public float Temp;               // °C
+            public double Clock, MemClock;   // MHz
+            public int FanRpm;
+            public float Watts, WattsLimit;  // NVIDIA only
+            public int FanPercent = -1;      // NVIDIA only
+        }
+        Dictionary<string, IntPtr> nvidia = new Dictionary<string, IntPtr>();   // NVML device by adapter name
+
+        // What the graphics kernel reports for an adapter (WDDM 2.4+, the values Task Manager uses); zeros where unknown.
+        static Perf Query(string luid)
+        {
+            Perf p = new Perf();
             try
             {
                 string[] parts = luid.Split('_');
                 Native.D3DKMT_OPENADAPTERFROMLUID open = new Native.D3DKMT_OPENADAPTERFROMLUID();
                 open.LuidHigh = Convert.ToInt32(parts[0].Substring(2), 16);
                 open.LuidLow = Convert.ToUInt32(parts[1].Substring(2), 16);
-                if (Native.D3DKMTOpenAdapterFromLuid(ref open) != 0) return 0;
+                if (Native.D3DKMTOpenAdapterFromLuid(ref open) != 0) return p;
                 IntPtr buf = Marshal.AllocHGlobal(64);
                 try
                 {
                     for (int i = 0; i < 64; i += 4) Marshal.WriteInt32(buf, i, 0);
                     Native.D3DKMT_QUERYADAPTERINFO q = new Native.D3DKMT_QUERYADAPTERINFO();
                     q.hAdapter = open.hAdapter; q.Type = 62; q.pData = buf; q.Size = 64;
-                    // D3DKMT_ADAPTER_PERFDATA: Temperature (in tenths of a degree) sits at offset 56.
-                    return Native.D3DKMTQueryAdapterInfo(ref q) == 0 ? Marshal.ReadInt32(buf, 56) / 10f : 0;
+                    // D3DKMT_ADAPTER_PERFDATA: MemoryFrequency (Hz) at 8, FanRPM at 48, Temperature (tenths of a degree) at 56.
+                    if (Native.D3DKMTQueryAdapterInfo(ref q) == 0)
+                    {
+                        p.MemClock = Marshal.ReadInt64(buf, 8) / 1e6;
+                        p.FanRpm = Marshal.ReadInt32(buf, 48);
+                        p.Temp = Marshal.ReadInt32(buf, 56) / 10f;
+                    }
+                    // D3DKMT_NODE_PERFDATA per engine: Frequency (Hz) at 8; the fastest engine is the GPU clock.
+                    q.Type = 61; q.Size = 56;
+                    for (int node = 0; node < 16; node++)
+                    {
+                        for (int i = 0; i < 64; i += 4) Marshal.WriteInt32(buf, i, 0);
+                        Marshal.WriteInt32(buf, 0, node);
+                        if (Native.D3DKMTQueryAdapterInfo(ref q) != 0) break;
+                        p.Clock = Math.Max(p.Clock, Marshal.ReadInt64(buf, 8) / 1e6);
+                    }
                 }
                 finally
                 {
@@ -630,7 +705,22 @@ namespace WinStats
                     Native.D3DKMTCloseAdapter(ref close);
                 }
             }
-            catch { return 0; }
+            catch { }
+            return p;
+        }
+
+        void AddNvidia(Adapter a, Perf p)
+        {
+            IntPtr d;
+            if (a == null || !nvidia.TryGetValue(a.Name, out d)) return;
+            uint mw, limit, fan;
+            try
+            {
+                if (Native.nvmlDeviceGetPowerUsage(d, out mw) == 0) p.Watts = mw / 1000f;
+                if (Native.nvmlDeviceGetEnforcedPowerLimit(d, out limit) == 0) p.WattsLimit = limit / 1000f;
+                if (Native.nvmlDeviceGetFanSpeed(d, out fan) == 0) p.FanPercent = (int)fan;
+            }
+            catch { }
         }
 
         void ReadAdapters()
@@ -730,17 +820,17 @@ namespace WinStats
             if (u.Keys.Any(k => Find(k) == null) && (DateTime.UtcNow - adaptersRead).TotalSeconds > 30) ReadAdapters();
 
             SortedDictionary<string, float> t = new SortedDictionary<string, float>();
-            if (Readings != null)
+            Dictionary<string, Perf> pf = new Dictionary<string, Perf>();
+            foreach (string luid in u.Keys)
             {
-                foreach (string luid in u.Keys)
-                {
-                    Adapter a = Find(luid);
-                    if (a != null && a.Software) continue;
-                    float c = Temperature(luid);
-                    if (c > 0) t[luid] = c;
-                }
+                Adapter a = Find(luid);
+                if (a != null && a.Software) continue;
+                Perf p = Query(luid);
+                AddNvidia(a, p);
+                pf[luid] = p;
+                if (p.Temp > 0) t[luid] = p.Temp;
             }
-            util = u; used = m; temps = t;
+            util = u; used = m; temps = t; perf = pf;
 
             // A chosen GPU shows its own values; otherwise the icon shows the busiest load or the highest temperature.
             shown = Selected.Length == 0 ? null : adapters.FirstOrDefault(a => a.Name == Selected);
@@ -785,8 +875,14 @@ namespace WinStats
                 util.TryGetValue(luid, out u);
                 rows.Add(new[] { a != null ? a.Name : "Adapter " + i, null });
                 rows.Add(new[] { "Load", u.ToString("0") + "%" });
-                float c;
-                if (temps.TryGetValue(luid, out c)) rows.Add(new[] { "Temperature", U.Celsius(c) });
+                Perf p;
+                if (!perf.TryGetValue(luid, out p)) p = new Perf();
+                if (p.Clock > 0) rows.Add(new[] { "Clock", U.Mhz(p.Clock) });
+                if (p.MemClock > 0) rows.Add(new[] { "Memory clock", U.Mhz(p.MemClock) });
+                if (p.Temp > 0) rows.Add(new[] { "Temperature", U.Celsius(p.Temp) });
+                if (p.Watts > 0) rows.Add(new[] { "Power", p.Watts.ToString("0.0") + " W" + (p.WattsLimit > 0 ? " of " + p.WattsLimit.ToString("0") + " W" : "") });
+                if (p.FanPercent >= 0) rows.Add(new[] { "Fan", p.FanPercent + "%" + (p.FanRpm > 0 ? " (" + p.FanRpm + " rpm)" : "") });
+                else if (p.FanRpm > 0) rows.Add(new[] { "Fan", p.FanRpm + " rpm" });
                 if (used.TryGetValue(luid, out m))
                     rows.Add(new[] { "Dedicated memory", a != null && a.Vram > 0 ? U.Bytes(m) + " of " + U.Bytes(a.Vram) : U.Bytes(m) });
                 i++;
@@ -1083,13 +1179,91 @@ namespace WinStats
 
         bool Plugged { get { return ps.PowerLineStatus == PowerLineStatus.Online; } }
 
+        // From the battery driver (first battery only); 0 / int.MinValue where it does not say.
+        string path;
+        bool relative;                       // capacities in relative units instead of mWh
+        int rateMw = int.MinValue, voltageMv;
+        long capacity, full, design;
+        int cycles;
+
+        static string FindBattery()
+        {
+            Guid cls = new Guid("72631e54-78a4-11d0-bcf7-00aa00b7b32a");   // GUID_DEVCLASS_BATTERY
+            IntPtr set = Native.SetupDiGetClassDevs(ref cls, IntPtr.Zero, IntPtr.Zero, 0x12);   // DIGCF_PRESENT | DIGCF_DEVICEINTERFACE
+            if (set == new IntPtr(-1)) return null;
+            try
+            {
+                Native.SP_DEVICE_INTERFACE_DATA data = new Native.SP_DEVICE_INTERFACE_DATA();
+                data.cbSize = Marshal.SizeOf(data);
+                if (!Native.SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref cls, 0, ref data)) return null;
+                int size;
+                Native.SetupDiGetDeviceInterfaceDetail(set, ref data, IntPtr.Zero, 0, out size, IntPtr.Zero);
+                IntPtr detail = Marshal.AllocHGlobal(size);
+                try
+                {
+                    Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);   // cbSize of SP_DEVICE_INTERFACE_DETAIL_DATA
+                    if (!Native.SetupDiGetDeviceInterfaceDetail(set, ref data, detail, size, out size, IntPtr.Zero)) return null;
+                    return Marshal.PtrToStringUni(new IntPtr(detail.ToInt64() + 4));
+                }
+                finally { Marshal.FreeHGlobal(detail); }
+            }
+            finally { Native.SetupDiDestroyDeviceInfoList(set); }
+        }
+
+        void ReadDriver()
+        {
+            if (path == null) path = FindBattery() ?? "";
+            if (path.Length == 0) return;
+            IntPtr h = Native.CreateFile(path, 0xC0000000, 3, IntPtr.Zero, 3, 0x80, IntPtr.Zero);
+            if (h == new IntPtr(-1)) return;
+            try
+            {
+                byte[] tag = new byte[4], none = new byte[4];
+                int ret;
+                if (!Native.DeviceIoControl(h, 0x294040, none, 4, tag, 4, out ret, IntPtr.Zero)) return;   // IOCTL_BATTERY_QUERY_TAG
+                // BATTERY_QUERY_INFORMATION { tag, BatteryInformation, 0 } -> BATTERY_INFORMATION
+                byte[] q = new byte[12], info = new byte[36];
+                Array.Copy(tag, q, 4);
+                if (Native.DeviceIoControl(h, 0x294044, q, q.Length, info, info.Length, out ret, IntPtr.Zero))
+                {
+                    relative = (BitConverter.ToUInt32(info, 0) & 0x40000000) != 0;
+                    design = BitConverter.ToUInt32(info, 12);
+                    full = BitConverter.ToUInt32(info, 16);
+                    cycles = (int)BitConverter.ToUInt32(info, 32);
+                }
+                // BATTERY_WAIT_STATUS { tag, timeout, ... } -> BATTERY_STATUS { state, capacity, voltage, rate }
+                byte[] w = new byte[20], st = new byte[16];
+                Array.Copy(tag, w, 4);
+                if (Native.DeviceIoControl(h, 0x29404C, w, w.Length, st, st.Length, out ret, IntPtr.Zero))
+                {
+                    capacity = BitConverter.ToUInt32(st, 4);
+                    voltageMv = (int)BitConverter.ToUInt32(st, 8);
+                    rateMw = BitConverter.ToInt32(st, 12);   // negative while discharging; 0x80000000 = unknown
+                }
+            }
+            catch { }
+            finally { Native.CloseHandle(h); }
+        }
+
+        static string Wh(long mwh) { return (mwh / 1000.0).ToString("0.0") + " Wh"; }
+
+        string Rate
+        {
+            get
+            {
+                if (rateMw == int.MinValue || rateMw == 0 || relative) return null;
+                return (rateMw > 0 ? "+" : "−") + (Math.Abs(rateMw) / 1000.0).ToString("0.0") + " W";
+            }
+        }
+
         public override void Update(double dt)
         {
+            ReadDriver();
             Value = U.Clamp01(ps.BatteryLifePercent);
             int pct = (int)Math.Round(Value * 100);
             Color = Plugged ? Color.FromArgb(52, 199, 89) : (pct <= 20 ? Color.FromArgb(255, 90, 82) : Color.FromArgb(255, 204, 0));
             IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
-            Tooltip = "Battery " + pct + "%" + (Plugged ? " (plugged in)" : "");
+            Tooltip = "Battery " + pct + "%" + (Rate != null ? ", " + Rate : "") + (Plugged ? " (plugged in)" : "");
             Push(pct);
         }
 
@@ -1116,6 +1290,12 @@ namespace WinStats
             rows.Add(new[] { "Power source", Plugged ? "AC adapter" : "Battery" });
             rows.Add(new[] { "State", charging ? "Charging" : (Plugged ? "Not charging" : "Discharging") });
             if (!Plugged && ps.BatteryLifeRemaining > 0) rows.Add(new[] { "Time remaining", U.Duration(ps.BatteryLifeRemaining) });
+            if (Rate != null) rows.Add(new[] { rateMw > 0 ? "Charging power" : "Power draw", Rate.Substring(1) });
+            if (!relative && full > 0 && capacity > 0) rows.Add(new[] { "Energy", Wh(capacity) + " of " + Wh(full) });
+            if (!relative && design > 0 && full > 0)
+                rows.Add(new[] { "Health", Math.Round(100.0 * full / design) + "% of " + Wh(design) });
+            if (voltageMv > 0) rows.Add(new[] { "Voltage", (voltageMv / 1000.0).ToString("0.0") + " V" });
+            if (cycles > 0) rows.Add(new[] { "Cycle count", cycles.ToString() });
         }
     }
 

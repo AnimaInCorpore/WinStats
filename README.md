@@ -30,12 +30,12 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 
 |     | Module  | Tray icon shows | Click opens |
 |:---:|---------|-----------------|-------------|
-| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load or temperature | History, per-core bars, temperature, uptime, top processes |
-| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load or temperature of the busiest (hottest) GPU, or of the one you pick | History, load, temperature and dedicated memory of each GPU by name |
+| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load or temperature | History, per-core bars, clock speed, temperature, uptime, top processes |
+| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load or temperature of the busiest (hottest) GPU, or of the one you pick | History; per GPU by name: load, clock, memory clock, temperature, power (NVIDIA), fan where reported, dedicated memory |
 | <img src="docs/modules/memory.png" width="40" alt=""> | **Memory** | Used RAM in % | History, used / available / committed, top processes |
 | <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space, active time or temperature of the system drive | Read/write speed, active time, free space of all drives, drive temperatures |
 | <img src="docs/modules/network.png" width="40" alt=""> | **Network** | Upload (red) and download (blue) speed | History, interface, local IP, totals since start |
-| <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining |
+| <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining, charge/discharge power, energy, health, voltage, cycle count |
 | <img src="docs/modules/display.png" width="40" alt=""> | **Display** | Active monitor input (e.g. `DP1`) | A menu to switch the monitor's input source |
 
 The battery module only appears on machines with a battery.
@@ -113,6 +113,10 @@ language features.
 - Temperatures need no driver or administrator rights: the GPU's comes from the
   graphics kernel (the value Task Manager shows), the drive's from the storage
   driver (`IOCTL_STORAGE_QUERY_PROPERTY`), the CPU's from the ACPI thermal zone.
+- GPU clocks come from the graphics kernel as well; GPU power in watts comes from
+  `nvml.dll`, which the NVIDIA driver installs. The CPU clock is the base frequency
+  times the "% Processor Performance" counter, as in Task Manager. Battery power,
+  capacities and cycle count come from the battery driver.
 - Icons are drawn as vectors at the exact pixel size the taskbar asks for at its
   current DPI (16 px at 100 %, 24 px at 150 %, 32 px at 200 %) and follow the
   light or dark taskbar theme.
@@ -130,5 +134,8 @@ language features.
   kernel driver on Windows. Machines without a thermal zone offer no CPU temperature.
 - Drive temperatures work for internal NVMe and most SATA drives; USB drives
   usually do not report one. GPU temperatures need a WDDM 2.4 or newer driver.
+- GPU power is only shown for NVIDIA cards. Laptop GPUs usually report no fan, and
+  some integrated GPUs report a fixed clock. Batteries that do not report a cycle
+  count or power draw simply leave those rows out.
 - Per-process CPU time of some protected system processes cannot be read
   without administrator rights; those are left out of the top-processes list.
