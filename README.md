@@ -173,7 +173,9 @@ language features.
   usually do not report one. GPU temperatures need a WDDM 2.4 or newer driver.
 - GPU power is only shown for NVIDIA cards. Laptop GPUs usually report no fan, and
   some integrated GPUs report a fixed clock. Batteries that do not report a cycle
-  count or power draw simply leave those rows out.
+  count or power draw simply leave those rows out. While charging, the battery popup
+  shows the power going into the battery, not the adapter's total output, which
+  Windows does not report.
 - Bluetooth batteries come from devices that report them over the hands-free
   profile, which covers most headsets and earbuds. Bluetooth LE devices such as mice
   and keyboards keep their level in a GATT service; they only appear if Windows

@@ -1689,7 +1689,7 @@ namespace WinStats
             rows.Add(new[] { "Power source", Plugged ? "AC adapter" : "Battery" });
             rows.Add(new[] { "State", charging ? "Charging" : (Plugged ? "Not charging" : "Discharging") });
             if (!Plugged && ps.BatteryLifeRemaining > 0) rows.Add(new[] { "Time remaining", U.Duration(ps.BatteryLifeRemaining) });
-            if (Rate != null) rows.Add(new[] { rateMw > 0 ? "Charging power" : "Power draw", Rate.Substring(1) });
+            if (Rate != null) rows.Add(new[] { rateMw > 0 ? "Into battery" : "Power draw", Rate.Substring(1) });
             if (!relative && full > 0 && capacity > 0) rows.Add(new[] { "Energy", Wh(capacity) + " of " + Wh(full) });
             if (!relative && design > 0 && full > 0)
                 rows.Add(new[] { "Health", Math.Round(100.0 * full / design) + "% of " + Wh(design) });
