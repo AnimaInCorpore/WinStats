@@ -12,7 +12,9 @@
 
 <p align="center">
   <a href="https://github.com/AnimaInCorpore/WinStats/releases/latest"><b>Download WinStats.exe</b></a>
-  &nbsp;·&nbsp; single file, about 90 KB &nbsp;·&nbsp; nothing to install
+  &nbsp;·&nbsp; single file, about 90 KB &nbsp;·&nbsp; nothing to install<br>
+  <sub>The exe is not code-signed, so Windows SmartScreen may warn on first start
+  (<i>More info → Run anyway</i>).</sub>
 </p>
 
 <p align="center">
@@ -84,23 +86,25 @@ superscript `%`; it is readable from 24 px (150 %) upward.
 ### Power hints
 
 The CPU popup shows the power plan, the power mode for plugged in and on battery
-(*Settings → System → Power & battery*), the processor state range and what the
+(*Settings → System → Power & battery*, on desktops *Power*), the processor state range and what the
 current mode does. The battery popup shows when energy saver turns on and the power
 mode on battery. When a setting works against you, a ☝ hint explains it and the
 module's tooltip says so:
 
 - **CPU:** a minimum processor state of 50 % or more, which keeps the CPU from slowing
-  down when idle (Windows' default is 5 %; laptop control apps sometimes raise it);
+  down when idle (Windows' default in the Balanced plan is 5 %; laptop control apps
+  sometimes raise it). The High and Ultimate performance plans keep it at 100 % by
+  design and are not flagged;
   a maximum processor state below 100 %, which caps the clock speed; *Best performance*
   on battery, or at 90 °C and above when plugged in.
 - **GPU** (machines with an integrated and a discrete GPU): browsers and other
   everyday apps such as Teams, Discord or VS Code set to *High performance* under
-  *Settings → Display → Graphics*. They keep the discrete GPU awake whenever they
+  *Settings → System → Display → Graphics*. They keep the discrete GPU awake whenever they
   are open. Games set to high performance are left alone.
 - **Battery:** energy saver set to never turn on; *Best performance* or everyday apps
   on the discrete GPU while running on battery.
 
-The link below a hint fixes it: it sets the processor state back to the default
+The link below a hint fixes it: it sets the processor state back to 5 % or 100 %
 in the active power plan, sets the apps back to *Let Windows decide* (applies when the
 app restarts), or opens the matching Settings page. A laptop's own control app may
 change these values again when you switch its profile.
@@ -138,7 +142,7 @@ language features.
   (monitor control). Nothing is sent anywhere.
 - Temperatures need no driver or administrator rights: the GPU's comes from the
   graphics kernel (the value Task Manager shows), the drive's from the storage
-  driver (`IOCTL_STORAGE_QUERY_PROPERTY`), the CPU's from the ACPI thermal zone.
+  driver (`IOCTL_STORAGE_QUERY_PROPERTY`), the CPU's from the hottest ACPI thermal zone.
 - GPU clocks come from the graphics kernel as well; GPU power in watts comes from
   `nvml.dll`, which the NVIDIA driver installs. The CPU clock is the base frequency
   times the "% Processor Performance" counter, as in Task Manager. Battery power,
@@ -162,7 +166,7 @@ language features.
 
 ## Limitations
 
-- The CPU temperature is the ACPI thermal zone the firmware reports, which is
+- The CPU temperature is the hottest ACPI thermal zone the firmware reports, which is
   close to but not the CPU's own sensor; reading that (and fan speeds) needs a
   kernel driver on Windows. Machines without a thermal zone offer no CPU temperature.
 - Drive temperatures work for internal NVMe and most SATA drives; USB drives

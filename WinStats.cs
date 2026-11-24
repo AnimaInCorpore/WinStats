@@ -696,10 +696,12 @@ namespace WinStats
         public List<string[]> Hints(float cpuTemp)
         {
             List<string[]> h = new List<string[]>();
-            if (MinAc >= HighMin)
-                h.Add(new[] { "Minimum processor state is " + MinAc + "% when plugged in. The CPU cannot slow down when idle, so it stays hot and the fans keep spinning. Windows' default is 5%; laptop control apps sometimes raise it.", "Set to 5% when plugged in", "minac" });
-            if (HasBattery && MinDc >= HighMin)
-                h.Add(new[] { "Minimum processor state is " + MinDc + "% on battery. The CPU cannot slow down when idle, which drains the battery. Windows' default is 5%.", "Set to 5% on battery", "mindc" });
+            // High and Ultimate performance keep the minimum at 100% by design; only flag it in other plans.
+            bool fullSpeedPlan = Plan == "High performance" || Plan == "Ultimate performance";
+            if (MinAc >= HighMin && !fullSpeedPlan)
+                h.Add(new[] { "Minimum processor state is " + MinAc + "% when plugged in. The CPU cannot slow down when idle, so it stays hot and the fans keep spinning. Windows' default in the Balanced plan is 5%; laptop control apps sometimes raise it.", "Set to 5% when plugged in", "minac" });
+            if (HasBattery && MinDc >= HighMin && !fullSpeedPlan)
+                h.Add(new[] { "Minimum processor state is " + MinDc + "% on battery. The CPU cannot slow down when idle, which drains the battery. Windows' default in the Balanced plan is 5%.", "Set to 5% on battery", "mindc" });
             if (Max >= 0 && Max < 100)
                 h.Add(new[] { "Maximum processor state is " + Max + "%" + (OnAc ? "" : " on battery") + ". This caps the clock speed: cooler and quieter, but noticeably slower.", "Set to 100%", OnAc ? "maxac" : "maxdc" });
             if (!OnAc && Mode == "Best performance")
