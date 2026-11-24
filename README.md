@@ -30,7 +30,7 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 
 |     | Module  | Tray icon shows | Click opens |
 |:---:|---------|-----------------|-------------|
-| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load or temperature | History, per-core bars, clock speed, temperature, uptime, top processes |
+| <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load or temperature | History, per-core bars, clock speed, temperature, uptime, power plan and mode with hints, top processes |
 | <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load or temperature of the busiest (hottest) GPU, or of the one you pick | History; per GPU by name: load, clock, memory clock, temperature, power (NVIDIA), fan where reported, dedicated memory |
 | <img src="docs/modules/memory.png" width="40" alt=""> | **Memory** | Used RAM in % | History, used / available / committed, top processes |
 | <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space, active time or temperature of the system drive | Read/write speed, active time, free space of all drives, drive temperatures |
@@ -81,6 +81,22 @@ Temperatures appear as `57°`; the bar, meter and ring styles scale them from 0 
 Percentages appear without a unit unless **Widget → Small % sign** is checked, which adds a
 superscript `%`; it is readable from 24 px (150 %) upward.
 
+### Power hints
+
+The CPU popup shows the power plan, the power mode for plugged in and on battery
+(*Settings → System → Power & battery*), the processor state range and what the
+current mode does. When a setting works against you, a ☝ hint explains it and the
+CPU tooltip says so:
+
+- a minimum processor state of 50 % or more, which keeps the CPU from slowing down
+  when idle (Windows' default is 5 %; laptop control apps sometimes raise it),
+- a maximum processor state below 100 %, which caps the clock speed,
+- *Best performance* on battery, or at 90 °C and above when plugged in.
+
+The link below a hint fixes it: it sets the processor state back to the default
+in the active power plan, or opens the power settings for the power mode. A laptop's
+own control app may change these values again when you switch its profile.
+
 ### Switching monitor inputs
 
 The Display module talks to external monitors over DDC/CI (VCP feature `0x60`),
@@ -119,6 +135,8 @@ language features.
   `nvml.dll`, which the NVIDIA driver installs. The CPU clock is the base frequency
   times the "% Processor Performance" counter, as in Task Manager. Battery power,
   capacities and cycle count come from the battery driver.
+- The power plan and processor states come from `powrprof.dll`, the power mode from
+  the registry key Windows' settings write it to.
 - Bluetooth battery levels are the device property Windows' Bluetooth settings show;
   the Bluetooth API (`bthprops.cpl`) tells which devices are connected, since the
   property keeps its last value after a device disconnects.

@@ -38,6 +38,17 @@ namespace WinStats
         [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
         [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int n, uint dpi);
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+
+        // Power plans (powrprof): active scheme, its processor settings and the Windows 11 power mode overlay.
+        [DllImport("powrprof.dll")] public static extern uint PowerGetActiveScheme(IntPtr root, out IntPtr scheme);
+        [DllImport("powrprof.dll")] public static extern uint PowerSetActiveScheme(IntPtr root, ref Guid scheme);
+        [DllImport("powrprof.dll")] public static extern uint PowerReadFriendlyName(IntPtr root, ref Guid scheme, IntPtr sub, IntPtr setting, byte[] buf, ref uint size);
+        [DllImport("powrprof.dll")] public static extern uint PowerReadACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, out uint value);
+        [DllImport("powrprof.dll")] public static extern uint PowerReadDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, out uint value);
+        [DllImport("powrprof.dll")] public static extern uint PowerWriteACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
+        [DllImport("powrprof.dll")] public static extern uint PowerWriteDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
+        [DllImport("powrprof.dll")] public static extern uint PowerGetEffectiveOverlayScheme(out Guid overlay);
+        [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr p);
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int n);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
         [DllImport("kernel32.dll")] public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX m);
@@ -393,6 +404,10 @@ namespace WinStats
         public virtual ContextMenuStrip ClickMenu() { return null; }
         public abstract void Update(double dt);
         public abstract void Details(List<string[]> rows);   // { key, value }; value == null => section header
+        // Special rows: { Note, text } wrapped dim text; { Hint, text } wrapped text after a pointing-up hand;
+        // { Link, label, id } a clickable line that calls Action(id).
+        public const string Note = "\u0001note", Hint = "\u0001hint", Link = "\u0001link";
+        public virtual void Action(string id) { }
 
         protected void Push(float v)
         {
@@ -543,8 +558,150 @@ namespace WinStats
         }
     }
 
+    // Snapshot of the active power plan's processor settings and the power mode, plus hints when
+    // a setting works against the user (e.g. a raised minimum processor state that keeps the CPU hot).
+    class PowerInfo
+    {
+        static Guid SubProcessor = new Guid("54533251-82be-4824-96c1-47b60b740d00");
+        static Guid ProcMin = new Guid("893dee8e-2bef-41e0-89c6-b55d0929964c");
+        static Guid ProcMax = new Guid("bc5038f7-23e0-4960-96da-33abaf5935ec");
+        public const int HighMin = 50;   // a minimum processor state from here on keeps the CPU from slowing down
+
+        public Guid Scheme;
+        public string Plan = "";
+        public string ModeAc, ModeDc;    // null if unknown
+        public bool OnAc = true, HasBattery;
+        public int MinAc = -1, MinDc = -1, MaxAc = -1, MaxDc = -1;
+
+        public int Min { get { return OnAc ? MinAc : MinDc; } }
+        public int Max { get { return OnAc ? MaxAc : MaxDc; } }
+        public string Mode { get { return OnAc ? ModeAc : ModeDc; } }
+
+        public static PowerInfo Read()
+        {
+            PowerInfo p = new PowerInfo();
+            PowerStatus ps = SystemInformation.PowerStatus;
+            p.OnAc = ps.PowerLineStatus != PowerLineStatus.Offline;
+            p.HasBattery = (ps.BatteryChargeStatus & BatteryChargeStatus.NoSystemBattery) == 0 && ps.BatteryChargeStatus != BatteryChargeStatus.Unknown;
+            IntPtr sp;
+            if (Native.PowerGetActiveScheme(IntPtr.Zero, out sp) != 0) return null;
+            p.Scheme = (Guid)Marshal.PtrToStructure(sp, typeof(Guid));
+            Native.LocalFree(sp);
+            p.Plan = PlanName(p.Scheme);
+            uint v;
+            if (Native.PowerReadACValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMin, out v) == 0) p.MinAc = (int)v;
+            if (Native.PowerReadDCValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMin, out v) == 0) p.MinDc = (int)v;
+            if (Native.PowerReadACValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMax, out v) == 0) p.MaxAc = (int)v;
+            if (Native.PowerReadDCValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMax, out v) == 0) p.MaxDc = (int)v;
+            // The power mode chosen in Settings is stored per power source; fall back to the effective one.
+            try
+            {
+                using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes"))
+                {
+                    if (k != null)
+                    {
+                        object ac = k.GetValue("ActiveOverlayAcPowerScheme"), dc = k.GetValue("ActiveOverlayDcPowerScheme");
+                        if (ac != null) p.ModeAc = ModeName(new Guid(ac.ToString()));
+                        if (dc != null) p.ModeDc = ModeName(new Guid(dc.ToString()));
+                    }
+                }
+            }
+            catch { }
+            if (p.Mode == null)
+            {
+                try
+                {
+                    Guid o;
+                    if (Native.PowerGetEffectiveOverlayScheme(out o) == 0)
+                    {
+                        if (p.OnAc) p.ModeAc = ModeName(o); else p.ModeDc = ModeName(o);
+                    }
+                }
+                catch { }
+            }
+            return p;
+        }
+
+        static string PlanName(Guid g)
+        {
+            switch (g.ToString())
+            {
+                case "381b4222-f694-41f0-9685-ff5bb260df2e": return "Balanced";
+                case "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c": return "High performance";
+                case "a1841308-3541-4fab-bc81-f71556f20b4a": return "Power saver";
+                case "e9a42b02-d5df-448d-aa00-03f14749eb61": return "Ultimate performance";
+            }
+            try
+            {
+                uint size = 0;
+                Native.PowerReadFriendlyName(IntPtr.Zero, ref g, IntPtr.Zero, IntPtr.Zero, null, ref size);
+                byte[] buf = new byte[size];
+                if (size > 0 && Native.PowerReadFriendlyName(IntPtr.Zero, ref g, IntPtr.Zero, IntPtr.Zero, buf, ref size) == 0)
+                    return Encoding.Unicode.GetString(buf).TrimEnd('\0');
+            }
+            catch { }
+            return "Custom";
+        }
+
+        static string ModeName(Guid g)
+        {
+            switch (g.ToString())
+            {
+                case "961cc777-2547-4f9d-8174-7d86181b8a7a": return "Best power efficiency";
+                case "00000000-0000-0000-0000-000000000000": return "Balanced";
+                case "3af9b8d9-7c97-431d-ad78-34a8bfea439f": return "Better performance";
+                case "ded574b5-45a0-4f42-8737-46345c09c238": return "Best performance";
+            }
+            return null;
+        }
+
+        public static string ModeNote(string mode)
+        {
+            switch (mode)
+            {
+                case "Best power efficiency": return "Lower clocks and less boost: the coolest and quietest mode with the longest battery life, but slower under load.";
+                case "Balanced": return "Boosts under load and slows down when idle. A good default for most work.";
+                case "Better performance": return "Boosts sooner than Balanced, still slows down when idle.";
+                case "Best performance": return "Boosts highest and soonest: fastest, but warmest and loudest, and the battery drains fastest.";
+            }
+            return null;
+        }
+
+        // Hints for settings that work against the user, each with an optional fix { text, link label, action id }.
+        public List<string[]> Hints(float cpuTemp)
+        {
+            List<string[]> h = new List<string[]>();
+            if (MinAc >= HighMin)
+                h.Add(new[] { "Minimum processor state is " + MinAc + "% when plugged in. The CPU cannot slow down when idle, so it stays hot and the fans keep spinning. Windows' default is 5%; laptop control apps sometimes raise it.", "Set to 5% when plugged in", "minac" });
+            if (HasBattery && MinDc >= HighMin)
+                h.Add(new[] { "Minimum processor state is " + MinDc + "% on battery. The CPU cannot slow down when idle, which drains the battery. Windows' default is 5%.", "Set to 5% on battery", "mindc" });
+            if (Max >= 0 && Max < 100)
+                h.Add(new[] { "Maximum processor state is " + Max + "%" + (OnAc ? "" : " on battery") + ". This caps the clock speed: cooler and quieter, but noticeably slower.", "Set to 100%", OnAc ? "maxac" : "maxdc" });
+            if (!OnAc && Mode == "Best performance")
+                h.Add(new[] { "Best performance on battery drains it fastest. Balanced or Best power efficiency lasts much longer.", "Open power settings", "settings" });
+            if (OnAc && Mode == "Best performance" && cpuTemp >= 90)
+                h.Add(new[] { "The CPU is at " + cpuTemp.ToString("0") + " °C. Balanced runs cooler and quieter at slightly lower peak speed; the laptop's own control app may offer a quiet profile too.", "Open power settings", "settings" });
+            return h;
+        }
+
+        public void Apply(string id)
+        {
+            if (id == "settings") { try { Process.Start("ms-settings:powersleep"); } catch { } return; }
+            Guid s = Scheme;
+            uint r = 1;
+            if (id == "minac") r = Native.PowerWriteACValueIndex(IntPtr.Zero, ref s, ref SubProcessor, ref ProcMin, 5);
+            if (id == "mindc") r = Native.PowerWriteDCValueIndex(IntPtr.Zero, ref s, ref SubProcessor, ref ProcMin, 5);
+            if (id == "maxac") r = Native.PowerWriteACValueIndex(IntPtr.Zero, ref s, ref SubProcessor, ref ProcMax, 100);
+            if (id == "maxdc") r = Native.PowerWriteDCValueIndex(IntPtr.Zero, ref s, ref SubProcessor, ref ProcMax, 100);
+            if (r == 0) Native.PowerSetActiveScheme(IntPtr.Zero, ref s);   // re-apply so the change takes effect now
+            else MessageBox.Show("Windows refused to change the setting (error " + r + ").", "WinStats", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     class CpuModule : Module
     {
+        PowerInfo power;
+        DateTime powerRead = DateTime.MinValue;
         PerformanceCounter total;
         PerformanceCounter[] cores;
         PerformanceCounter[] temps = new PerformanceCounter[0];
@@ -606,8 +763,14 @@ namespace WinStats
             {
                 try { baseMhz = baseFreq.NextValue(); mhz = baseMhz * perf.NextValue() / 100f; } catch { mhz = 0; }
             }
+            if ((DateTime.UtcNow - powerRead).TotalSeconds >= 10)
+            {
+                powerRead = DateTime.UtcNow;
+                try { power = PowerInfo.Read(); } catch { power = null; }
+            }
             int pct = loadPct;
-            Tooltip = "CPU " + pct + "%" + (mhz > 0 ? ", " + U.Mhz(mhz) : "") + (temp > 0 ? ", " + U.Celsius(temp) : "");
+            Tooltip = "CPU " + pct + "%" + (mhz > 0 ? ", " + U.Mhz(mhz) : "") + (temp > 0 ? ", " + U.Celsius(temp) : "")
+                + (power != null && power.Hints(temp).Count > 0 ? "\n☝ Power hint: click for details" : "");
             if (Reading == 1) { ShowTemperature(temp); return; }
             IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
             Push(pct);
@@ -632,8 +795,32 @@ namespace WinStats
             rows.Add(new[] { "Logical cores", Environment.ProcessorCount.ToString() });
             if (temp > 0) rows.Add(new[] { "Temperature (ACPI)", U.Celsius(temp) });
             rows.Add(new[] { "Uptime", U.Duration(Native.GetTickCount64() / 1000.0) });
+            PowerInfo pw = power;
+            if (pw != null)
+            {
+                rows.Add(new[] { "Power", null });
+                rows.Add(new[] { "Power plan", pw.Plan });
+                if (pw.ModeAc != null) rows.Add(new[] { "Plugged in" + (pw.OnAc ? " (now)" : ""), pw.ModeAc });
+                if (pw.HasBattery && pw.ModeDc != null) rows.Add(new[] { "On battery" + (pw.OnAc ? "" : " (now)"), pw.ModeDc });
+                if (pw.Min >= 0 && pw.Max >= 0) rows.Add(new[] { "Processor state", pw.Min + "% to " + pw.Max + "%" });
+                string note = PowerInfo.ModeNote(pw.Mode);
+                if (note != null) rows.Add(new[] { Note, note });
+                foreach (string[] h in pw.Hints(temp))
+                {
+                    rows.Add(new[] { Hint, h[0] });
+                    rows.Add(new[] { Link, h[1], h[2] });
+                }
+            }
             rows.Add(new[] { "Top processes", null });
             foreach (KeyValuePair<string, double> p in Procs.TopCpu) rows.Add(new[] { p.Key, p.Value.ToString("0.0") + "%" });
+        }
+
+        public override void Action(string id)
+        {
+            PowerInfo pw = power;
+            if (pw == null) return;
+            pw.Apply(id);
+            try { power = PowerInfo.Read(); powerRead = DateTime.UtcNow; } catch { }
         }
     }
 
@@ -1743,8 +1930,47 @@ namespace WinStats
             rows = new List<string[]>();
             m.Details(rows);
             float h = 14 + 36 + 64 + (m.Bars != null ? 36 : 0) + 10;
-            foreach (string[] r in rows) h += r[1] == null ? 26 : 20;
+            using (Bitmap bmp = new Bitmap(1, 1))
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (Font norm = NormFont())
+            {
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                foreach (string[] r in rows)
+                {
+                    if (r[0] == Module.Note || r[0] == Module.Hint) h += TextHeight(g, norm, r) / S;
+                    else h += r[1] == null ? 26 : 20;
+                }
+            }
             return (int)(h * S);
+        }
+
+        Font NormFont() { return new Font("Segoe UI", 9 * S * 96f / 72f, FontStyle.Regular, GraphicsUnit.Pixel); }
+
+        // Notes and hints wrap; hints leave room on the left for the hand.
+        float TextLeft(string[] r) { return r[0] == Module.Hint ? 22 * S : 0; }
+
+        float TextHeight(Graphics g, Font f, string[] r)
+        {
+            float cw = W - 28 * S - TextLeft(r);
+            return (float)Math.Ceiling(g.MeasureString(r[1], f, (int)cw).Height) + 6 * S;
+        }
+
+        List<KeyValuePair<RectangleF, string>> links = new List<KeyValuePair<RectangleF, string>>();
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            Cursor = links.Any(l => l.Key.Contains(e.Location)) ? Cursors.Hand : Cursors.Default;
+        }
+
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            foreach (KeyValuePair<RectangleF, string> l in links.ToArray())
+            {
+                if (!l.Key.Contains(e.Location)) continue;
+                lock (App.Sync) { try { M.Action(l.Value); } catch { } }
+                if (Visible) RefreshData();
+                return;
+            }
         }
 
         public void ShowFor(Module m, Point at)
@@ -1827,9 +2053,34 @@ namespace WinStats
                     y += 36 * S;
                 }
 
+                links.Clear();
+                Color hand = light ? Color.FromArgb(196, 120, 0) : Color.FromArgb(255, 185, 40);
                 foreach (string[] r in rows)
                 {
-                    if (r[1] == null)
+                    if (r[0] == Module.Note || r[0] == Module.Hint)
+                    {
+                        float th = TextHeight(g, norm, r), left = TextLeft(r);
+                        RectangleF tr = new RectangleF(p + left, y + 3 * S, cw - left, th);
+                        if (r[0] == Module.Hint)
+                        {
+                            using (Font sym = new Font("Segoe UI Symbol", 11 * pt, FontStyle.Regular, GraphicsUnit.Pixel))
+                            using (SolidBrush bHand = new SolidBrush(hand))
+                                g.DrawString("☝", sym, bHand, p - 2 * S, y);
+                        }
+                        g.DrawString(r[1], norm, r[0] == Module.Hint ? bFg : bDim, tr);
+                        y += th;
+                    }
+                    else if (r[0] == Module.Link)
+                    {
+                        float left = 22 * S;
+                        SizeF sz = g.MeasureString(r[1], norm);
+                        RectangleF lr = new RectangleF(p + left, y, Math.Min(sz.Width, cw - left), 20 * S);
+                        using (Font ul = new Font(norm, FontStyle.Underline))
+                            g.DrawString(r[1], ul, bCol, lr, near);
+                        if (r.Length > 2 && r[2] != null) links.Add(new KeyValuePair<RectangleF, string>(lr, r[2]));
+                        y += 20 * S;
+                    }
+                    else if (r[1] == null)
                     {
                         g.DrawString(r[0].ToUpper(), hdr, bDim, new RectangleF(p, y + 6 * S, cw, 20 * S), near);
                         y += 26 * S;
