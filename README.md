@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/AnimaInCorpore/WinStats/releases/latest"><b>Download WinStats.exe</b></a>
-  &nbsp;·&nbsp; single file, about 50 KB &nbsp;·&nbsp; nothing to install
+  &nbsp;·&nbsp; single file, about 90 KB &nbsp;·&nbsp; nothing to install
 </p>
 
 <p align="center">
