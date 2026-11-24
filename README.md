@@ -31,11 +31,11 @@ It is a single C# file with no dependencies beyond what ships with Windows.
 |     | Module  | Tray icon shows | Click opens |
 |:---:|---------|-----------------|-------------|
 | <img src="docs/modules/cpu.png" width="40" alt=""> | **CPU** | Total load or temperature | History, per-core bars, clock speed, temperature, uptime, power plan and mode with hints, top processes |
-| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load or temperature of the busiest (hottest) GPU, or of the one you pick | History; per GPU by name: load, clock, memory clock, temperature, power (NVIDIA), fan where reported, dedicated memory |
+| <img src="docs/modules/gpu.png" width="40" alt=""> | **GPU** | Load or temperature of the busiest (hottest) GPU, or of the one you pick | History; per GPU by name: load, clock, memory clock, temperature, power (NVIDIA), fan where reported, dedicated memory; per-app graphics preference hints |
 | <img src="docs/modules/memory.png" width="40" alt=""> | **Memory** | Used RAM in % | History, used / available / committed, top processes |
 | <img src="docs/modules/disk.png" width="40" alt=""> | **Disk** | Used space, active time or temperature of the system drive | Read/write speed, active time, free space of all drives, drive temperatures |
 | <img src="docs/modules/network.png" width="40" alt=""> | **Network** | Upload (red) and download (blue) speed | History, interface, local IP, totals since start |
-| <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining, charge/discharge power, energy, health, voltage, cycle count |
+| <img src="docs/modules/battery.png" width="40" alt=""> | **Battery** | Charge in % | History, power source, state, time remaining, charge/discharge power, energy, health, voltage, cycle count, energy saver, power mode on battery |
 | <img src="docs/modules/bluetooth.png" width="40" alt=""> | **Bluetooth** | Lowest battery level of the connected devices | Battery level of each paired headset or other device that reports one |
 | <img src="docs/modules/display.png" width="40" alt=""> | **Display** | Active monitor input (e.g. `DP1`) | A menu to switch the monitor's input source |
 
@@ -85,17 +85,25 @@ superscript `%`; it is readable from 24 px (150 %) upward.
 
 The CPU popup shows the power plan, the power mode for plugged in and on battery
 (*Settings → System → Power & battery*), the processor state range and what the
-current mode does. When a setting works against you, a ☝ hint explains it and the
-CPU tooltip says so:
+current mode does. The battery popup shows when energy saver turns on and the power
+mode on battery. When a setting works against you, a ☝ hint explains it and the
+module's tooltip says so:
 
-- a minimum processor state of 50 % or more, which keeps the CPU from slowing down
-  when idle (Windows' default is 5 %; laptop control apps sometimes raise it),
-- a maximum processor state below 100 %, which caps the clock speed,
-- *Best performance* on battery, or at 90 °C and above when plugged in.
+- **CPU:** a minimum processor state of 50 % or more, which keeps the CPU from slowing
+  down when idle (Windows' default is 5 %; laptop control apps sometimes raise it);
+  a maximum processor state below 100 %, which caps the clock speed; *Best performance*
+  on battery, or at 90 °C and above when plugged in.
+- **GPU** (machines with an integrated and a discrete GPU): browsers and other
+  everyday apps such as Teams, Discord or VS Code set to *High performance* under
+  *Settings → Display → Graphics*. They keep the discrete GPU awake whenever they
+  are open. Games set to high performance are left alone.
+- **Battery:** energy saver set to never turn on; *Best performance* or everyday apps
+  on the discrete GPU while running on battery.
 
 The link below a hint fixes it: it sets the processor state back to the default
-in the active power plan, or opens the power settings for the power mode. A laptop's
-own control app may change these values again when you switch its profile.
+in the active power plan, sets the apps back to *Let Windows decide* (applies when the
+app restarts), or opens the matching Settings page. A laptop's own control app may
+change these values again when you switch its profile.
 
 ### Switching monitor inputs
 
@@ -135,8 +143,9 @@ language features.
   `nvml.dll`, which the NVIDIA driver installs. The CPU clock is the base frequency
   times the "% Processor Performance" counter, as in Task Manager. Battery power,
   capacities and cycle count come from the battery driver.
-- The power plan and processor states come from `powrprof.dll`, the power mode from
-  the registry key Windows' settings write it to.
+- The power plan, processor states and energy saver threshold come from `powrprof.dll`,
+  the power mode and per-app graphics preferences from the registry keys Windows'
+  settings write them to.
 - Bluetooth battery levels are the device property Windows' Bluetooth settings show;
   the Bluetooth API (`bthprops.cpl`) tells which devices are connected, since the
   property keeps its last value after a device disconnects.

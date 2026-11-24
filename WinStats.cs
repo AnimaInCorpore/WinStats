@@ -49,6 +49,13 @@ namespace WinStats
         [DllImport("powrprof.dll")] public static extern uint PowerWriteDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
         [DllImport("powrprof.dll")] public static extern uint PowerGetEffectiveOverlayScheme(out Guid overlay);
         [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr p);
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SYSTEM_POWER_STATUS
+        {
+            public byte ACLineStatus, BatteryFlag, BatteryLifePercent, SystemStatusFlag;   // SystemStatusFlag 1 = energy saver on
+            public int BatteryLifeTime, BatteryFullLifeTime;
+        }
+        [DllImport("kernel32.dll")] public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS s);
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int n);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
         [DllImport("kernel32.dll")] public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX m);
@@ -572,6 +579,21 @@ namespace WinStats
         public string ModeAc, ModeDc;    // null if unknown
         public bool OnAc = true, HasBattery;
         public int MinAc = -1, MinDc = -1, MaxAc = -1, MaxDc = -1;
+        public int SaverAt = -1;         // battery level at which energy saver turns on: 0 = never, 100 = always
+        public bool SaverOn;
+        static Guid SubEnergySaver = new Guid("de830923-a562-41af-a086-e3a2c6bad2da");
+        static Guid SaverThreshold = new Guid("e69653ca-cf7f-4f05-aa73-cb833fa90ad4");
+
+        public string SaverText
+        {
+            get
+            {
+                if (SaverOn) return "On";
+                if (SaverAt == 0) return "Never turns on";
+                if (SaverAt >= 100) return "Always on";
+                return SaverAt > 0 ? "Turns on at " + SaverAt + "%" : null;
+            }
+        }
 
         public int Min { get { return OnAc ? MinAc : MinDc; } }
         public int Max { get { return OnAc ? MaxAc : MaxDc; } }
@@ -593,6 +615,9 @@ namespace WinStats
             if (Native.PowerReadDCValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMin, out v) == 0) p.MinDc = (int)v;
             if (Native.PowerReadACValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMax, out v) == 0) p.MaxAc = (int)v;
             if (Native.PowerReadDCValueIndex(IntPtr.Zero, ref p.Scheme, ref SubProcessor, ref ProcMax, out v) == 0) p.MaxDc = (int)v;
+            if (Native.PowerReadDCValueIndex(IntPtr.Zero, ref p.Scheme, ref SubEnergySaver, ref SaverThreshold, out v) == 0) p.SaverAt = (int)v;
+            Native.SYSTEM_POWER_STATUS st;
+            if (Native.GetSystemPowerStatus(out st)) p.SaverOn = (st.SystemStatusFlag & 1) != 0;
             // The power mode chosen in Settings is stored per power source; fall back to the effective one.
             try
             {
@@ -684,9 +709,21 @@ namespace WinStats
             return h;
         }
 
+        // Battery popup: energy saver and the power mode on battery.
+        public List<string[]> BatteryHints()
+        {
+            List<string[]> h = new List<string[]>();
+            if (SaverAt == 0)
+                h.Add(new[] { "Energy saver never turns on by itself, so a low battery runs at full speed until it is empty. Windows' default is to turn it on at 20% or 30%.", "Open energy saver settings", "saversettings" });
+            if (!OnAc && ModeDc == "Best performance")
+                h.Add(new[] { "Best performance on battery drains it fastest. Balanced or Best power efficiency lasts much longer.", "Open power settings", "settings" });
+            return h;
+        }
+
         public void Apply(string id)
         {
             if (id == "settings") { try { Process.Start("ms-settings:powersleep"); } catch { } return; }
+            if (id == "saversettings") { try { Process.Start("ms-settings:batterysaver"); } catch { } return; }
             Guid s = Scheme;
             uint r = 1;
             if (id == "minac") r = Native.PowerWriteACValueIndex(IntPtr.Zero, ref s, ref SubProcessor, ref ProcMin, 5);
@@ -824,6 +861,85 @@ namespace WinStats
         }
     }
 
+    // Per-app graphics preference (Settings → Display → Graphics), stored as "GpuPreference=n;" per exe path:
+    // 0 = let Windows decide, 1 = power saving, 2 = high performance. On a laptop with two GPUs an everyday app
+    // forced to high performance keeps the discrete GPU awake whenever it runs.
+    static class GpuPrefs
+    {
+        const string Key = @"Software\Microsoft\DirectX\UserGpuPreferences";
+        static readonly Dictionary<string, string> Everyday = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
+            { "chrome", "Chrome" }, { "msedge", "Edge" }, { "firefox", "Firefox" }, { "brave", "Brave" }, { "opera", "Opera" },
+            { "vivaldi", "Vivaldi" }, { "arc", "Arc" }, { "teams", "Teams" }, { "ms-teams", "Teams" }, { "discord", "Discord" },
+            { "slack", "Slack" }, { "zoom", "Zoom" }, { "whatsapp", "WhatsApp" }, { "telegram", "Telegram" }, { "spotify", "Spotify" },
+            { "code", "VS Code" }, { "outlook", "Outlook" }, { "olk", "Outlook" }, { "explorer", "Explorer" }, { "acrobat", "Acrobat" }
+        };
+
+        // Exe paths set to high performance.
+        public static List<string> HighPerformance()
+        {
+            List<string> list = new List<string>();
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(Key))
+                {
+                    if (k == null) return list;
+                    foreach (string name in k.GetValueNames())
+                    {
+                        object v = k.GetValue(name);
+                        if (v != null && Regex.IsMatch(v.ToString(), @"(^|;)GpuPreference=2;")) list.Add(name);
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        // Everyday apps among them, with a display name.
+        public static List<KeyValuePair<string, string>> EverydayOnHighPerformance()
+        {
+            List<KeyValuePair<string, string>> r = new List<KeyValuePair<string, string>>();
+            foreach (string path in HighPerformance())
+            {
+                string n;
+                if (Everyday.TryGetValue(Path.GetFileNameWithoutExtension(path), out n)) r.Add(new KeyValuePair<string, string>(path, n));
+            }
+            return r;
+        }
+
+        public static string Names(List<KeyValuePair<string, string>> apps)
+        {
+            List<string> n = apps.Select(a => a.Value).Distinct().ToList();
+            if (n.Count == 1) return n[0];
+            return string.Join(", ", n.Take(n.Count - 1).ToArray()) + " and " + n[n.Count - 1];
+        }
+
+        public static string Hint(List<KeyValuePair<string, string>> apps)
+        {
+            return Names(apps) + (apps.Select(a => a.Value).Distinct().Count() == 1 ? " is" : " are")
+                + " set to always use the high-performance GPU. It cannot sleep while "
+                + (apps.Count == 1 ? "it is" : "they are") + " open, which drains the battery and adds heat; "
+                + "these apps run fine on the integrated GPU. The change applies when the app restarts.";
+        }
+
+        // Sets the everyday apps back to "Let Windows decide", keeping any other options in the value.
+        public static void Reset()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(Key, true))
+                {
+                    if (k == null) return;
+                    foreach (KeyValuePair<string, string> a in EverydayOnHighPerformance())
+                    {
+                        string v = k.GetValue(a.Key).ToString();
+                        k.SetValue(a.Key, Regex.Replace(v, @"(^|;)GpuPreference=2;", "$1GpuPreference=0;"));
+                    }
+                }
+            }
+            catch { }
+        }
+    }
+
     class GpuModule : Module
     {
         PerformanceCounterCategory eng, mem;
@@ -843,6 +959,13 @@ namespace WinStats
         DateTime adaptersRead;
         Adapter shown;
 
+        // Per-app graphics preferences, read every 10 s; only a concern with an integrated and a discrete GPU.
+        public static bool Hybrid;
+        DateTime prefsRead = DateTime.MinValue;
+        int highPerf;
+        List<KeyValuePair<string, string>> everyday = new List<KeyValuePair<string, string>>();
+        public List<KeyValuePair<string, string>> EverydayOnHighPerformance { get { return Hybrid ? everyday : new List<KeyValuePair<string, string>>(); } }
+
         // Name of the adapter the tray icon follows; empty = whichever is busiest.
         // Stored by name because Windows hands out new LUIDs on every boot.
         public string Selected = "";
@@ -857,6 +980,7 @@ namespace WinStats
             }
             catch { }
             ReadAdapters();
+            Hybrid = adapters.Count(a => !a.Software) > 1;
             if (adapters.Any(a => !a.Software && Query(a.Luid).Temp > 0)) Readings = new[] { "Load", "Temperature" };
             try
             {
@@ -1071,8 +1195,16 @@ namespace WinStats
                 }
                 if (t.Count > 0) temp = t.Values.Max();
             }
+            if ((DateTime.UtcNow - prefsRead).TotalSeconds >= 10)
+            {
+                prefsRead = DateTime.UtcNow;
+                Hybrid = adapters.Count(a => !a.Software) > 1;
+                highPerf = GpuPrefs.HighPerformance().Count;
+                everyday = GpuPrefs.EverydayOnHighPerformance();
+            }
             int pct = (int)Math.Round(load);
-            Tooltip = "GPU " + pct + "%" + (temp > 0 ? ", " + U.Celsius(temp) : "") + (shown != null ? " - " + shown.Name : "");
+            Tooltip = "GPU " + pct + "%" + (temp > 0 ? ", " + U.Celsius(temp) : "") + (shown != null ? " - " + shown.Name : "")
+                + (Hybrid && everyday.Count > 0 ? "\n☝ Graphics hint" : "");
             if (Reading == 1) { ShowTemperature(temp); return; }
             Value = load / 100f;
             IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
@@ -1112,6 +1244,26 @@ namespace WinStats
                     rows.Add(new[] { "Dedicated memory", a != null && a.Vram > 0 ? U.Bytes(m) + " of " + U.Bytes(a.Vram) : U.Bytes(m) });
                 i++;
             }
+            if (Hybrid)
+            {
+                rows.Add(new[] { "Graphics preference", null });
+                rows.Add(new[] { "Apps set to high performance", highPerf.ToString() });
+                if (everyday.Count > 0)
+                {
+                    rows.Add(new[] { Hint, GpuPrefs.Hint(everyday) });
+                    rows.Add(new[] { Link, "Let Windows decide for " + (everyday.Count == 1 ? "this app" : "these apps"), "gpureset" });
+                }
+                rows.Add(new[] { Link, "Open graphics settings", "gpusettings" });
+            }
+        }
+
+        public override void Action(string id)
+        {
+            if (id == "gpusettings") { try { Process.Start("ms-settings:display-advancedgraphics"); } catch { } return; }
+            if (id != "gpureset") return;
+            GpuPrefs.Reset();
+            highPerf = GpuPrefs.HighPerformance().Count;
+            everyday = GpuPrefs.EverydayOnHighPerformance();
         }
     }
 
@@ -1481,14 +1633,34 @@ namespace WinStats
             }
         }
 
+        // Energy saver, power mode on battery and apps that keep the discrete GPU awake, read every 10 s.
+        PowerInfo power;
+        DateTime powerRead = DateTime.MinValue;
+        List<KeyValuePair<string, string>> everyday = new List<KeyValuePair<string, string>>();
+
+        List<string[]> Hints()
+        {
+            List<string[]> h = power != null ? power.BatteryHints() : new List<string[]>();
+            if (!Plugged && everyday.Count > 0)
+                h.Add(new[] { GpuPrefs.Hint(everyday), "Let Windows decide for " + (everyday.Count == 1 ? "this app" : "these apps"), "gpureset" });
+            return h;
+        }
+
         public override void Update(double dt)
         {
             ReadDriver();
+            if ((DateTime.UtcNow - powerRead).TotalSeconds >= 10)
+            {
+                powerRead = DateTime.UtcNow;
+                try { power = PowerInfo.Read(); } catch { power = null; }
+                everyday = GpuModule.Hybrid ? GpuPrefs.EverydayOnHighPerformance() : new List<KeyValuePair<string, string>>();
+            }
             Value = U.Clamp01(ps.BatteryLifePercent);
             int pct = (int)Math.Round(Value * 100);
             Color = Plugged ? Color.FromArgb(52, 199, 89) : (pct <= 20 ? Color.FromArgb(255, 90, 82) : Color.FromArgb(255, 204, 0));
             IconText = pct.ToString(); IconUnit = "%"; BigText = pct + "%";
-            Tooltip = "Battery " + pct + "%" + (Rate != null ? ", " + Rate : "") + (Plugged ? " (plugged in)" : "");
+            Tooltip = "Battery " + pct + "%" + (Rate != null ? ", " + Rate : "") + (Plugged ? " (plugged in)" : "")
+                + (Hints().Count > 0 ? "\n☝ Battery hint" : "");
             Push(pct);
         }
 
@@ -1521,6 +1693,27 @@ namespace WinStats
                 rows.Add(new[] { "Health", Math.Round(100.0 * full / design) + "% of " + Wh(design) });
             if (voltageMv > 0) rows.Add(new[] { "Voltage", (voltageMv / 1000.0).ToString("0.0") + " V" });
             if (cycles > 0) rows.Add(new[] { "Cycle count", cycles.ToString() });
+            PowerInfo pw = power;
+            if (pw != null)
+            {
+                rows.Add(new[] { "Power", null });
+                if (pw.SaverText != null) rows.Add(new[] { "Energy saver", pw.SaverText });
+                if (pw.ModeDc != null) rows.Add(new[] { "Power mode on battery", pw.ModeDc });
+            }
+            foreach (string[] h in Hints())
+            {
+                rows.Add(new[] { Hint, h[0] });
+                rows.Add(new[] { Link, h[1], h[2] });
+            }
+        }
+
+        public override void Action(string id)
+        {
+            if (id == "gpureset") GpuPrefs.Reset();
+            else if (power != null) power.Apply(id);
+            try { power = PowerInfo.Read(); } catch { }
+            everyday = GpuModule.Hybrid ? GpuPrefs.EverydayOnHighPerformance() : new List<KeyValuePair<string, string>>();
+            powerRead = DateTime.UtcNow;
         }
     }
 
