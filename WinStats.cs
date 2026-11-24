@@ -2633,6 +2633,10 @@ namespace WinStats
         // With a module name ("--preview out.png CPU") it samples for a while and renders only that module's popup.
         public static void Preview(string path, string only)
         {
+            // Previews feed the README, so numbers use English formatting ("3.49 GHz") whatever Windows is set to.
+            System.Globalization.CultureInfo en = new System.Globalization.CultureInfo("en-US");
+            System.Globalization.CultureInfo.DefaultThreadCurrentCulture = en;
+            Thread.CurrentThread.CurrentCulture = en;
             List<Module> mods = CreateModules();
             if (only != null) mods = mods.Where(m => string.Equals(m.Name, only, StringComparison.OrdinalIgnoreCase)).ToList();
             if (mods.Count == 0) return;

@@ -156,6 +156,7 @@ language features.
   an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Two diagnostic switches render without starting the tray app:
   `WinStats.exe --preview out.png` draws all widgets and popups into an image
+  with English number formatting
   (add a module name such as `CPU` to get just that popup after 45 s of sampling),
   `WinStats.exe --monitors out.txt` lists the detected monitors and inputs.
 
