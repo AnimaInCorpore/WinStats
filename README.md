@@ -143,6 +143,10 @@ language features.
 - Temperatures need no driver or administrator rights: the GPU's comes from the
   graphics kernel (the value Task Manager shows), the drive's from the storage
   driver (`IOCTL_STORAGE_QUERY_PROPERTY`), the CPU's from the hottest ACPI thermal zone.
+- CPU load is the share of time the cores were busy (`% Processor Time`), the value
+  Task Manager shows since the 2025 Windows 11 updates. The older `% Processor Utility`
+  also scales by clock speed and reads up to twice as high on CPUs that boost far above
+  their base clock; Task Manager offers it as the optional *CPU Utility* column.
 - GPU clocks come from the graphics kernel as well; GPU power in watts comes from
   `nvml.dll`, which the NVIDIA driver installs. The CPU clock is the base frequency
   times the "% Processor Performance" counter, as in Task Manager. Battery power,

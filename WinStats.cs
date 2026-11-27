@@ -754,13 +754,15 @@ namespace WinStats
             Name = "CPU"; Label = "CPU"; Color = Color.FromArgb(76, 154, 255); WantsProcesses = true;
             try
             {
-                // "% Processor Utility" is what Task Manager shows.
+                // "% Processor Time": the share of time the cores were busy, which Task Manager shows since the
+                // 2025 Windows 11 updates. The older "% Processor Utility" also scales by clock speed and reads up
+                // to twice as high on CPUs that boost far above their base clock.
                 PerformanceCounterCategory cat = new PerformanceCounterCategory("Processor Information");
                 string[] names = cat.GetInstanceNames().Where(x => !x.Contains("_Total"))
                     .OrderBy(x => int.Parse(x.Split(',')[0])).ThenBy(x => int.Parse(x.Split(',')[1])).ToArray();
-                total = new PerformanceCounter("Processor Information", "% Processor Utility", "_Total");
+                total = new PerformanceCounter("Processor Information", "% Processor Time", "_Total");
                 total.NextValue();
-                cores = names.Select(x => new PerformanceCounter("Processor Information", "% Processor Utility", x)).ToArray();
+                cores = names.Select(x => new PerformanceCounter("Processor Information", "% Processor Time", x)).ToArray();
             }
             catch
             {
